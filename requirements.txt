@@ -2,4 +2,6 @@ streamlit
 pandas
 requests
 plotly
+streamlit-autorefresh
+
 
