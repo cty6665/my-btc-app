@@ -30,26 +30,25 @@ if 'orders' not in st.session_state: st.session_state.orders = []
 # ==========================================
 # 2. 增强型数据获取函数
 # ==========================================
-def get_crypto_data(symbol, interval):
-    # 尝试使用不同的币安 API 节点以增加稳定性
-    endpoints = [
-        f"https://api.binance.com/api/v3/klines",
-        f"https://api1.binance.com/api/v3/klines",
-        f"https://api2.binance.com/api/v3/klines"
-    ]
-    params = {"symbol": symbol, "interval": interval, "limit": 60}
-    for url in endpoints:
-        try:
-            res = requests.get(url, params=params, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                df = pd.DataFrame(data, columns=['time','open','high','low','close','v','ct','qa','tr','tb','tq','ig'])
-                df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=8)
-                for col in ['open','high','low','close']: df[col] = df[col].astype(float)
-                return df['close'].iloc[-1], df
-        except:
-            continue
-    return None, None
+def get_crypto_data_combined(symbol, interval):
+    # 增加时间戳防止缓存
+    import time
+    timestamp = int(time.time() * 1000)
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=60&_={timestamp}"
+    
+    try:
+        res = requests.get(url, timeout=3)
+        if res.status_code == 200:
+            data = res.json()
+            df = pd.DataFrame(data, columns=['time','open','high','low','close','v','ct','qa','tr','tb','tq','ig'])
+            df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=8)
+            for col in ['open','high','low','close']: df[col] = df[col].astype(float)
+            # 获取当前真正的最新成交价
+            ticker_url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+            curr_price = float(requests.get(ticker_url).json()['price'])
+            return curr_price, df
+    except:
+        return None, None
 
 # ==========================================
 # 3. 侧边栏
@@ -140,3 +139,4 @@ for od in reversed(st.session_state.orders[-5:]):
         <span style="color:{res_color}">{od['状态']} {od['结果'] if od['结果'] else ''}</span>
     </div>
     """, unsafe_allow_html=True)
+
