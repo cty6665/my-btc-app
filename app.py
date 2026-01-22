@@ -1,149 +1,142 @@
 import streamlit as st
 import pandas as pd
 import requests
-import time
-import json
-import os
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. 配置与数据持久化
+# 1. 基础配置
 # ==========================================
-st.set_page_config(page_title="BTC移动版交易系统", layout="wide")
-DB_FILE = "user_data.json"
+st.set_page_config(page_title="Trade Pro", layout="wide", initial_sidebar_state="collapsed")
 
-def load_data():
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r") as f:
-                data = json.load(f)
-                for od in data['orders']:
-                    od['开仓时间'] = datetime.strptime(od['开仓时间'], '%Y-%m-%d %H:%M:%S')
-                    od['结算时间'] = datetime.strptime(od['结算时间'], '%Y-%m-%d %H:%M:%S')
-                return data['balance'], data['orders']
-        except: return 1000.0, []
-    return 1000.0, []
-
-def save_data(balance, orders):
-    serialized = []
-    for od in orders:
-        temp = od.copy()
-        temp['开仓时间'] = od['开仓时间'].strftime('%Y-%m-%d %H:%M:%S')
-        temp['结算时间'] = od['结算时间'].strftime('%Y-%m-%d %H:%M:%S')
-        if "结算K线时间" in temp: del temp["结算K线时间"]
-        serialized.append(temp)
-    with open(DB_FILE, "w") as f:
-        json.dump({"balance": balance, "orders": serialized}, f)
-
-# 初始化
-if 'balance' not in st.session_state:
-    b, o = load_data()
-    st.session_state.balance = b
-    st.session_state.orders = o
-
-# ==========================================
-# 2. 样式优化 (适配手机屏幕)
-# ==========================================
+# 强制白色背景样式
 st.markdown("""
 <style>
-    .stApp { background-color: #0B0E11; color: #EAECEF; }
-    .price-text { font-family: 'Consolas', monospace; font-size: 32px; font-weight: bold; color: #0ECB81; }
-    .pos-card { border-left: 5px solid #FCD535; padding: 10px; background: #1E2329; margin-bottom: 5px; border-radius: 4px; font-size: 14px; }
-    @media (max-width: 640px) { .price-text { font-size: 24px; } }
+    .stApp { background-color: #FFFFFF; color: #000000; }
+    [data-testid="stSidebar"] { background-color: #F8F9FA; border-right: 1px solid #EEE; }
+    .price-text { font-family: 'Consolas', monospace; font-size: 32px; font-weight: bold; color: #02C076; }
+    .pos-card { border-left: 5px solid #FCD535; padding: 10px; background: #F8F9FA; margin-bottom: 8px; border-radius: 8px; border: 1px solid #EEE; color: #000; }
+    div[data-testid="stMetricValue"] { color: #000000 !important; font-size: 18px !important; }
+    p, span, label { color: #000000 !important; }
 </style>
 """, unsafe_allow_html=True)
 
+# 每 5 秒自动刷新一次页面
+st_autorefresh(interval=5000, key="datarefresh")
+
 # ==========================================
-# 3. 核心功能
+# 2. 初始化状态
 # ==========================================
-def get_data(symbol, interval='1m'):
-    base_url = "https://api.binance.com"
+if 'balance' not in st.session_state: st.session_state.balance = 1000.0
+if 'orders' not in st.session_state: st.session_state.orders = []
+
+# ==========================================
+# 3. 侧边栏配置
+# ==========================================
+with st.sidebar:
+    st.header("⚙️ 设置")
+    target_coin = st.selectbox("交易品种", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0)
+    interval_choice = st.selectbox("K线周期", ['1m', '5m', '15m', '1h'], index=0)
+    unit_map = {"5分钟": 5, "10分钟": 10, "30分钟": 30, "1小时": 60, "1天": 1440}
+    selected_duration = st.radio("结算时长", list(unit_map.keys()), index=1)
+    duration_mins = unit_map[selected_duration]
+    if st.button("重置账户"):
+        st.session_state.balance, st.session_state.orders = 1000.0, []
+        st.rerun()
+
+# ==========================================
+# 4. 数据获取与结算逻辑
+# ==========================================
+def get_crypto_data(symbol, interval):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=60"
     try:
-        res = requests.get(f"{base_url}/api/v3/klines?symbol={symbol}&interval={interval}&limit=80", timeout=3).json()
+        res = requests.get(url, timeout=3).json()
         df = pd.DataFrame(res, columns=['time','open','high','low','close','v','ct','qa','tr','tb','tq','ig'])
         df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=8)
         for col in ['open','high','low','close']: df[col] = df[col].astype(float)
-        # 计算指标
-        df['MB'] = df['close'].rolling(20).mean()
-        std = df['close'].rolling(20).std()
-        df['UP'], df['DN'] = df['MB'] + 2*std, df['MB'] - 2*std
-        return df['close'].iloc[-1], df, "OK"
-    except Exception as e: return 0.0, pd.DataFrame(), str(e)
+        return df['close'].iloc[-1], df
+    except:
+        return 0.0, pd.DataFrame()
 
-# 侧边栏
-with st.sidebar:
-    st.title("📱 移动交易端")
-    symbol = st.selectbox("选择交易对", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "DOGEUSDT"])
-    st.metric("账户余额", f"${st.session_state.balance:,.2f}")
-    
-    # 统计信息
-    if st.session_state.orders:
-        wins = len([o for o in st.session_state.orders if o.get('结果') == 'W'])
-        total = len([o for o in st.session_state.orders if o['状态'] == '已结算'])
-        rate = (wins/total*100) if total > 0 else 0
-        st.write(f"📊 胜率: {rate:.1f}% (胜{wins}/总{total})")
+price, df = get_crypto_data(target_coin, interval_choice)
+now = datetime.now()
 
-    duration_mins = st.select_slider("结算时长(分)", options=[1, 5, 10, 30, 60, 1440])
-    if st.button("重置系统"):
-        st.session_state.orders, st.session_state.balance = [], 1000.0
-        save_data(1000.0, [])
+# 自动结算
+for od in st.session_state.orders:
+    if od["状态"] == "待结算" and now >= od["结算时间"]:
+        win = (od["方向"] == "上涨" and price > od["开仓价"]) or (od["方向"] == "下跌" and price < od["开仓价"])
+        if win:
+            st.session_state.balance += od["金额"] * 1.8
+            od.update({"状态": "已结算", "结果": "WIN", "颜色": "#02C076"})
+        else:
+            od.update({"状态": "已结算", "结果": "LOSS", "颜色": "#CF304A"})
+
+# 统计看板数据
+orders = st.session_state.orders
+finished_orders = [od for od in orders if od['状态']=='已结算']
+total_profit = sum([(od['金额']*0.8 if od['结果']=='WIN' else -od['金额']) for od in finished_orders])
+win_rate = (len([od for od in finished_orders if od['结果']=='WIN']) / len(finished_orders) * 100) if finished_orders else 0.0
+
+# ==========================================
+# 5. 主界面渲染
+# ==========================================
+# 顶部统计
+c1, c2, c3 = st.columns(3)
+c1.metric("当日盈亏", f"${total_profit:.2f}")
+c2.metric("总盈亏", f"${total_profit:.2f}")
+c3.metric("胜率", f"{win_rate:.1f}%")
+
+st.divider()
+
+# 价格显示
+st.markdown(f"**{target_coin}** <span class='price-text'>${price:,.2f}</span> (余额: ${st.session_state.balance:.2f})", unsafe_allow_html=True)
+
+# K线图表
+if not df.empty:
+    fig = go.Figure(data=[go.Candlestick(
+        x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'],
+        increasing_line_color='#02C076', decreasing_line_color='#CF304A'
+    )])
+    fig.update_layout(
+        height=400, template="plotly_white", margin=dict(l=0,r=0,t=0,b=0),
+        xaxis_rangeslider_visible=False
+    )
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+else:
+    st.warning("正在加载K线数据...")
+
+# 下单操作
+st.subheader("⚡ 快速下单")
+order_amt = st.number_input("下单金额 (U)", 10.0, 5000.0, 50.0)
+col_buy, col_sell = st.columns(2)
+
+if col_buy.button("🟢 看涨 (BULL)", use_container_width=True, type="primary"):
+    if st.session_state.balance >= order_amt:
+        st.session_state.balance -= order_amt
+        st.session_state.orders.append({
+            "开仓时间": now, "结算时间": now + timedelta(minutes=duration_mins),
+            "方向": "上涨", "开仓价": price, "金额": order_amt, "状态": "待结算", "结果": None
+        })
         st.rerun()
 
-# 主界面
-chart_spot = st.empty()
-st.write("---")
-amt = st.number_input("投入金额", 1.0, 10000.0, 10.0)
-c1, c2 = st.columns(2)
-buy_btn = c1.button("🟢 看涨 (BULL)", use_container_width=True)
-sell_btn = c2.button("🔴 看跌 (BEAR)", use_container_width=True)
-pos_spot = st.empty()
+if col_sell.button("🔴 看跌 (BEAR)", use_container_width=True):
+    if st.session_state.balance >= order_amt:
+        st.session_state.balance -= order_amt
+        st.session_state.orders.append({
+            "开仓时间": now, "结算时间": now + timedelta(minutes=duration_mins),
+            "方向": "下跌", "开仓价": price, "金额": order_amt, "状态": "待结算", "结果": None
+        })
+        st.rerun()
 
-# 循环更新
-while True:
-    price, df, status = get_data(symbol)
-    if status == "OK":
-        now = datetime.now()
-        
-        # 处理买入
-        if buy_btn or sell_btn:
-            direction = "上涨" if buy_btn else "下跌"
-            if st.session_state.balance >= amt:
-                st.session_state.balance -= amt
-                st.session_state.orders.append({
-                    "开仓时间": now, "结算时间": now + timedelta(minutes=duration_mins),
-                    "方向": direction, "行权价": price, "金额": amt, "状态": "待结算", "结果": None, "币种": symbol
-                })
-                save_data(st.session_state.balance, st.session_state.orders)
-                st.rerun()
-
-        # 检查结算
-        for od in st.session_state.orders:
-            if od["状态"] == "待结算" and now >= od["结算时间"]:
-                win = (od["方向"] == "上涨" and price > od["行权价"]) or (od["方向"] == "下跌" and price < od["行权价"])
-                if win:
-                    st.session_state.balance += od["金额"] * 1.8
-                    od["状态"], od["结果"], od["颜色"] = "已结算", "W", "#0ECB81"
-                else:
-                    od["状态"], od["结果"], od["颜色"] = "已结算", "L", "#F6465D"
-                save_data(st.session_state.balance, st.session_state.orders)
-
-        # 渲染图表
-        with chart_spot.container():
-            st.markdown(f"{symbol}: <span class='price-text'>${price:,.2f}</span>", unsafe_allow_html=True)
-            fig = go.Figure(data=[go.Candlestick(x=df['time'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name="K")])
-            fig.add_trace(go.Scatter(x=df['time'], y=df['MB'], line=dict(color='#FF00FF', width=1), name="中轨"))
-            fig.update_layout(height=350, template="plotly_dark", margin=dict(l=0,r=0,t=0,b=0), xaxis_rangeslider_visible=False)
-            st.plotly_chart(fig, use_container_width=True, key=f"{time.time()}")
-
-        # 仓位显示
-        with pos_spot.container():
-            for od in reversed(st.session_state.orders[-5:]): # 手机端只显示最近5条
-                rem = (od["结算时间"] - now).total_seconds()
-                timer = f" | {int(rem//60)}m{int(rem%60)}s" if rem > 0 else ""
-                st.markdown(f"""<div class="pos-card">
-                    {od['币种']} | {od['方向']}@{od['行权价']:.2f} | {od['状态']} {od['结果'] or ''} {timer}
-                </div>""", unsafe_allow_html=True)
-                
-    time.sleep(2)
+# 订单列表
+st.divider()
+st.write("📋 最近记录")
+for od in reversed(st.session_state.orders[-5:]):
+    res_color = od.get("颜色", "#FCD535")
+    st.markdown(f"""
+    <div class="pos-card">
+        <b>{od['方向']}</b> | 开仓: ${od['开仓价']:.2f} | {od['金额']}U | 
+        <span style="color:{res_color}">{od['状态']} {od['结果'] if od['结果'] else ''}</span>
+    </div>
+    """, unsafe_allow_html=True)
