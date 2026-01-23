@@ -11,7 +11,7 @@ from streamlit_autorefresh import st_autorefresh
 # 1. 数据库持久化逻辑 (余额 + 详细订单)
 # ==========================================
 DB_FILE = "trading_db.json"
-st.set_page_config(page_title="Binance Pro Terminal", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Gemini Pro Trader", layout="wide", initial_sidebar_state="collapsed")
 
 def load_db():
     if os.path.exists(DB_FILE):
@@ -24,7 +24,9 @@ def load_db():
                 for od in orders:
                     for key in ['开仓时间', '结算时间', '平仓时间']:
                         if od.get(key) and isinstance(od[key], str) and od[key] != "-":
-                            od[key] = datetime.strptime(od[key], '%Y-%m-%d %H:%M:%S')
+                            try:
+                                od[key] = datetime.strptime(od[key], '%Y-%m-%d %H:%M:%S')
+                            except: pass
                 return balance, orders
         except: return 1000.0, []
     return 1000.0, []
@@ -43,15 +45,18 @@ def save_db(balance, orders):
 if 'balance' not in st.session_state:
     st.session_state.balance, st.session_state.orders = load_db()
 
-# 自定义样式：黑金专业风
+# 自定义专业 UI 样式
 st.markdown("""
 <style>
     .stApp { background-color: #FFFFFF; color: #000; }
     .stButton button { background-color: #FCD535 !important; color: #000 !important; font-weight: bold; border-radius: 5px; height: 3em; }
-    .metric-card { background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #FCD535; }
+    .metric-card { background: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #FCD535; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    .win-text { color: #02C076; font-weight: bold; }
+    .loss-text { color: #CF304A; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
+# 每 5 秒强制刷新一次页面，保持行情和倒计时同步
 st_autorefresh(interval=5000, key="global_refresh")
 
 # ==========================================
@@ -87,14 +92,13 @@ current_price = get_price(coin)
 now = datetime.now()
 
 # ==========================================
-# 4. 核心结算逻辑 (修复跨币种价格错位)
+# 4. 核心结算逻辑
 # ==========================================
-if current_price:
+if current_price is not None:
     updated = False
     for od in st.session_state.orders:
         if od.get("状态") == "待结算" and now >= od.get("结算时间"):
-            # 必须请求该订单对应的资产价格
-            p_close = get_price(od["资产"])
+            p_close = get_price(od["资产"]) # 跨币种核心：获取订单当时对应的资产价
             if p_close:
                 od["平仓价"] = p_close
                 od["平仓时间"] = now
@@ -123,9 +127,7 @@ win_rate = (len([o for o in settled if o.get("结果") == "W"]) / len(settled) *
 # ==========================================
 # 6. TV 原生 API 注入 (虚线 + K线永久标记)
 # ==========================================
-# 准备当前币种的活跃虚线
 active_prices = [o['开仓价'] for o in st.session_state.orders if o['状态'] == '待结算' and o['资产'] == coin]
-# 准备当前币种的历史 W/L 标记
 history_marks = []
 for o in st.session_state.orders:
     if o.get("状态") == "已结算" and o.get("资产") == coin:
@@ -148,7 +150,7 @@ tv_html = f"""
 
     widget.onChartReady(function() {{
         var chart = widget.chart();
-        // 1. 画活跃虚线
+        // 1. 画活跃虚线 (实时)
         var activePrices = {json.dumps(active_prices)};
         activePrices.forEach(function(p) {{
             chart.createShape({{time: 0, price: p}}, {{
@@ -156,7 +158,7 @@ tv_html = f"""
                 overrides: {{ linecolor: "#02C076", linestyle: 2, linewidth: 2, showLabel: true }}
             }});
         }});
-        // 2. 画永久 K 线标记
+        // 2. 画永久 K 线标记 (W/L)
         var marks = {json.dumps(history_marks)};
         marks.forEach(function(m) {{
             chart.createShape({{time: m.time, price: m.price}}, {{
@@ -169,11 +171,13 @@ tv_html = f"""
 """
 
 # ==========================================
-# 7. 主界面渲染
+# 7. 主界面渲染 (修正 ValueError 处理)
 # ==========================================
 c1, c2, c3 = st.columns(3)
+display_price = current_price if current_price is not None else 0.0
+
 with c1: st.markdown(f"<div class='metric-card'><b>可用余额</b><br><h2 style='margin:0;'>${st.session_state.balance:,.2f}</h2></div>", unsafe_allow_html=True)
-with c2: st.markdown(f"<div class='metric-card'><b>{coin} 实时价</b><br><h2 style='margin:0;'>${current_price:,.2f if current_price else 0}</h2></div>", unsafe_allow_html=True)
+with c2: st.markdown(f"<div class='metric-card'><b>{coin} 实时价</b><br><h2 style='margin:0;'>${display_price:,.2f}</h2></div>", unsafe_allow_html=True)
 with c3: st.markdown(f"<div class='metric-card'><b>总胜率</b><br><h2 style='margin:0;'>{win_rate:.1f}%</h2></div>", unsafe_allow_html=True)
 
 components.html(tv_html, height=460)
@@ -209,14 +213,21 @@ if st.session_state.orders:
     history = []
     for od in reversed(st.session_state.orders[-15:]):
         rem = (od.get("结算时间", now) - now).total_seconds()
+        
+        # 格式化平仓/实时价显示
+        if od.get('平仓价'):
+            p_display = f"{od['平仓价']:,.2f}"
+        else:
+            p_display = f"📡 {display_price:,.2f}"
+            
         history.append({
             "资产": od.get("资产"),
             "方向": "上涨 ↗️" if od["方向"] == "看涨" else "下跌 ↘️",
             "投入": f"{od['金额']} U",
             "开仓基准": f"{od['开仓价']:,.2f}",
-            "当前/平仓": f"{od['平仓价']:,.2f}" if od['平仓价'] else f"📡 {current_price:,.2f}",
-            "开仓时间": od['开仓时间'].strftime('%H:%M:%S'),
-            "平仓时间": od['平仓时间'].strftime('%H:%M:%S') if od.get('平仓时间') else "等待中...",
+            "当前/平仓": p_display,
+            "开仓时间": od['开仓时间'].strftime('%H:%M:%S') if isinstance(od.get('开仓时间'), datetime) else "-",
+            "平仓时间": od['平仓时间'].strftime('%H:%M:%S') if isinstance(od.get('平仓时间'), datetime) else "等待中...",
             "状态/结果": od['结果'] if od['结果'] else f"倒计时 {int(rem)}s"
         })
     st.table(history)
