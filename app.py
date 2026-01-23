@@ -9,8 +9,8 @@ from streamlit_autorefresh import st_autorefresh
 # ==========================================
 # 1. 配置私有密钥 (请自行修改此处)
 # ==========================================
-API_KEY = "你的API_KEY"
-API_SECRET = "你的SECRET_KEY"
+API_KEY = OV8COob7B14HYTG100sMaNPTkhSJ01dpqFVZSQa2HdRZRVhxBrwHdOFAIFNuWS8t
+API_SECRET = 01laqkijcLmd824pmdhFqIzScfaDbNexO6WDu6I199J8S9ECqASGWmRQ8pv6PBT9
 DATA_FILE = "trading_data.csv"
 
 # ==========================================
@@ -149,3 +149,4 @@ for od in reversed(st.session_state.orders[-5:]):
         <span style="color:{color}">状态: {od['状态']} {od['结果'] if od['结果'] else ''}</span>
     </div>
     """, unsafe_allow_html=True)
+
