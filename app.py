@@ -31,7 +31,27 @@ if 'balance' not in st.session_state:
     st.session_state.balance = load_data()
 if 'orders' not in st.session_state:
     st.session_state.orders = []
+def get_price_emergency():
+    # 路径 1: 币安备用接口
+    try:
+        res = requests.get("https://api3.binance.com/api/v3/ticker/price?symbol=BTCUSDT", timeout=1.5).json()
+        return float(res['price'])
+    except: pass
 
+    # 路径 2: Gate.io 接口 (非常稳，极少封IP)
+    try:
+        res = requests.get("https://api.gateio.ws/api/v4/spot/tickers?currency_pair=BTC_USDT", timeout=1.5).json()
+        return float(res[0]['last'])
+    except: pass
+
+    # 路径 3: Crypto.com 接口
+    try:
+        res = requests.get("https://api.crypto.com/v2/public/get-ticker?instrument_name=BTC_USDT", timeout=1.5).json()
+        return float(res['result']['data'][0]['a'])
+    except: pass
+
+    return None
+    
 # CSS 样式 (保留你的简洁白色风格)
 st.markdown("""
 <style>
@@ -174,4 +194,5 @@ if st.session_state.orders:
             "结果": od["结果"] if od["结果"] else countdown
         })
     st.table(history_data)
+
 
