@@ -1,14 +1,16 @@
 import streamlit as st
 import pandas as pd
+import requests
+import time
 import os
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
 # ==========================================
-# 1. 基础配置与数据持久化
+# 1. 基础配置与持久化 (沿用你代码的逻辑)
 # ==========================================
+st.set_page_config(page_title="Pro Hybrid Terminal", layout="wide", initial_sidebar_state="collapsed")
 DATA_FILE = "trading_data.csv"
-st.set_page_config(page_title="Frontend Price Pro", layout="wide", initial_sidebar_state="collapsed")
 
 def load_data():
     if os.path.exists(DATA_FILE):
@@ -23,108 +25,112 @@ if 'balance' not in st.session_state: st.session_state.balance = load_data()
 if 'orders' not in st.session_state: st.session_state.orders = []
 
 # ==========================================
-# 2. 核心黑科技：前端价格注入框
+# 2. 提取你提供的必通报价逻辑 (2秒刷新)
 # ==========================================
-# 这个输入框是“价格搬运工”，JS 会往这里填值
-with st.sidebar:
-    st.header("⚙️ 终端控制")
-    # 隐藏的实时报价接收器
-    injected_price = st.number_input("实时同步价", value=0.0, format="%.2f")
-    coin = st.selectbox("品种", ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
-    duration = st.radio("结算周期", [1, 5, 10, 30])
-    bet = st.number_input("下单金额", 10.0, 5000.0, 50.0)
-    
-    if st.button("🚨 重置账户"):
-        st.session_state.balance = 1000.0
-        st.session_state.orders = []
-        save_data(1000.0)
-        st.rerun()
+def get_binance_price(symbol):
+    try:
+        # 参考你代码中的 K 线接口获取最新价
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        res = requests.get(url, timeout=1.5)
+        return float(res.json()['price'])
+    except:
+        return None
 
 # ==========================================
-# 3. UI 样式
+# 3. 页面样式
 # ==========================================
 st.markdown("""
 <style>
     .stApp { background-color: #FFFFFF; }
-    .price-card { background: #F8F9FA; border-radius: 12px; padding: 20px; text-align: center; border: 1px solid #EEE; margin-bottom: 10px; }
-    .price-val { font-size: 48px; font-weight: bold; color: #02C076; font-family: monospace; }
-    .stButton button { width: 100%; height: 60px; font-size: 22px !important; }
+    .price-text { font-size: 42px; font-weight: bold; color: #02C076; text-align: center; }
+    .stButton button { width: 100%; height: 60px; font-size: 20px !important; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 4. 主界面：TV 图表 + 价格抓取脚本
+# 4. 侧边栏
 # ==========================================
-c1, c2 = st.columns([2, 1])
+with st.sidebar:
+    coin = st.selectbox("选择品种", ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+    duration = st.radio("结算周期(分钟)", [1, 5, 10, 30])
+    bet = st.number_input("下单金额", 10.0, 5000.0, 50.0)
+    if st.button("🚨 重置账户"):
+        st.session_state.balance, st.session_state.orders = 1000.0, []
+        save_data(1000.0)
+        st.rerun()
 
-with c1:
-    # TradingView 控件
+# ==========================================
+# 5. 主界面布局
+# ==========================================
+# 获取最新价 (每当页面运行都会刷新)
+current_price = get_binance_price(coin)
+now = datetime.now()
+
+col_main, col_side = st.columns([3, 1])
+
+with col_main:
+    # --- 100% 自由的 TradingView 图表 ---
+    # 只要 coin 没变，它就不会被刷新，你可以随意切分钟、调指标
     tv_html = f"""
         <div id="tv-chart" style="height:500px;"></div>
         <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
         <script type="text/javascript">
-        var widget = new TradingView.widget({{
+        new TradingView.widget({{
           "autosize": true, "symbol": "BINANCE:{coin}", "interval": "1",
           "timezone": "Asia/Shanghai", "theme": "light", "style": "1",
           "locale": "zh_CN", "container_id": "tv-chart",
-          "withdateranges": true, "hide_side_toolbar": false,
-          "allow_symbol_change": true, "save_image": false,
-          "studies": ["MAExp@tv-basicstudies"]
+          "hide_side_toolbar": false, "allow_symbol_change": true,
+          "studies": ["MAExp@tv-basicstudies", "BollingerBandsUpper@tv-basicstudies"]
         }});
         </script>
     """
     components.html(tv_html, height=500)
 
-with c2:
-    st.markdown('<div class="price-card">', unsafe_allow_html=True)
-    st.write("📈 实时行情")
-    if injected_price > 0:
-        st.markdown(f'<div class="price-val">${injected_price:,.2f}</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="price-val" style="color:orange; font-size:24px;">等待图表报价...</div>', unsafe_allow_html=True)
-    st.write(f"可用余额: **${st.session_state.balance:.2f}**")
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # 下单区
-    col_up, col_down = st.columns(2)
-    now = datetime.now()
+with col_side:
+    st.write("💰 账户余额")
+    st.subheader(f"${st.session_state.balance:.2f}")
     
-    # 只要注入的价格 > 0，按钮就生效
-    if col_up.button("🟢 看涨"):
-        if injected_price > 0 and st.session_state.balance >= bet:
+    st.write("📈 实时报价")
+    if current_price:
+        st.markdown(f'<div class="price-text">${current_price:,.2f}</div>', unsafe_allow_html=True)
+    else:
+        st.warning("连接中...")
+
+    # 下单逻辑
+    if st.button("🟢 看涨 (UP)", type="primary"):
+        if current_price and st.session_state.balance >= bet:
             st.session_state.balance -= bet
             save_data(st.session_state.balance)
             st.session_state.orders.append({
-                "方向": "看涨", "开仓价": injected_price, "金额": bet,
-                "开仓时间": now, "结算时间": now + timedelta(minutes=duration), "状态": "待结算"
+                "方向": "看涨", "开仓价": current_price, "金额": bet,
+                "结算时间": now + timedelta(minutes=duration), "状态": "待结算"
             })
             st.rerun()
 
-    if col_down.button("🔴 看跌"):
-        if injected_price > 0 and st.session_state.balance >= bet:
+    if st.button("🔴 看跌 (DOWN)"):
+        if current_price and st.session_state.balance >= bet:
             st.session_state.balance -= bet
             save_data(st.session_state.balance)
             st.session_state.orders.append({
-                "方向": "看跌", "开仓价": injected_price, "金额": bet,
-                "开仓时间": now, "结算时间": now + timedelta(minutes=duration), "状态": "待结算"
+                "方向": "看跌", "开仓价": current_price, "金额": bet,
+                "结算时间": now + timedelta(minutes=duration), "状态": "待结算"
             })
             st.rerun()
 
 # ==========================================
-# 5. 自动结算逻辑
+# 6. 自动结算 (沿用你代码的 W/L 逻辑)
 # ==========================================
-# 使用注入的价格进行实时结算
-if injected_price > 0:
+if current_price:
+    updated = False
     for od in st.session_state.orders:
         if od["状态"] == "待结算" and now >= od["结算时间"]:
-            win = (od["方向"] == "看涨" and injected_price > od["开仓价"]) or \
-                  (od["方向"] == "看跌" and injected_price < od["开仓价"])
+            win = (od["方向"] == "看涨" and current_price > od["开仓价"]) or \
+                  (od["方向"] == "看跌" and current_price < od["开仓价"])
             st.session_state.balance += (od["金额"] * 1.8) if win else 0
             od["状态"] = "已结算 (WIN)" if win else "已结算 (LOSS)"
-            save_data(st.session_state.balance)
+            updated = True
+    if updated: save_data(st.session_state.balance)
 
-# 历史记录
-st.write("---")
-st.write("📜 最近交易")
-for od in reversed(st.session_state.orders[-3:]):
-    st.write(f"{od['方向']} @ {od['开仓价']} | 状态: {od['状态']}")
+# 强制页面每 2 秒静默刷新数据 (不会重置 TV 图表)
+time.sleep(2)
+st.rerun()
