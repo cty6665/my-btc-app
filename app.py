@@ -154,11 +154,20 @@ tv_html = f"""
 """
 
 # ==========================================
-# 6. 主界面 UI 渲染
+# 6. 主界面 UI 渲染 (已修正格式化错误)
 # ==========================================
 c1, c2, c3 = st.columns(3)
-with c1: st.markdown(f"<div class='metric-card'><b>账户余额</b><br><h2>${st.session_state.balance:,.2f}</h2></div>", unsafe_allow_html=True)
-with c2: st.markdown(f"<div class='metric-card'><b>实时价格</b><br><h2>${current_price:,.2f if current_price else 0}</h2></div>", unsafe_allow_html=True)
+
+# 预先处理好要显示的字符串
+balance_str = f"{st.session_state.balance:,.2f}"
+price_str = f"{current_price:,.2f}" if current_price else "连接中..."
+
+with c1: 
+    st.markdown(f"<div class='metric-card'><b>账户余额</b><br><h2>${balance_str}</h2></div>", unsafe_allow_html=True)
+
+with c2: 
+    st.markdown(f"<div class='metric-card'><b>实时价格</b><br><h2>${price_str}</h2></div>", unsafe_allow_html=True)
+
 with c3:
     settled_list = [o for o in st.session_state.orders if o.get('状态') == '已结算']
     wr = (len([o for o in settled_list if o['结果'] == 'W']) / len(settled_list) * 100) if settled_list else 0
@@ -200,3 +209,4 @@ if st.session_state.orders:
             "状态/结果": status_text
         })
     st.table(df_data)
+
