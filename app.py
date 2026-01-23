@@ -125,52 +125,6 @@ total_pnl = sum([o.get("收益", 0) for o in settled])
 win_rate = (len([o for o in settled if o.get("结果") == "W"]) / len(settled) * 100) if settled else 0
 
 # ==========================================
-# 6. TV 原生 API 注入 (虚线 + K线永久标记)
-# ==========================================
-active_prices = [o['开仓价'] for o in st.session_state.orders if o['状态'] == '待结算' and o['资产'] == coin]
-history_marks = []
-for o in st.session_state.orders:
-    if o.get("状态") == "已结算" and o.get("资产") == coin:
-        history_marks.append({
-            "time": int(o['开仓时间'].timestamp()),
-            "price": o['开仓价'],
-            "label": o['结果'],
-            "color": "#02C076" if o['结果'] == "W" else "#CF304A"
-        })
-
-tv_html = f"""
-<div id="tv_chart_container" style="height:450px;"></div>
-<script src="https://s3.tradingview.com/tv.js"></script>
-<script>
-    var widget = new TradingView.widget({{
-        "autosize": true, "symbol": "BINANCE:{coin}", "interval": "1",
-        "theme": "light", "style": "1", "locale": "zh_CN", "container_id": "tv_chart_container",
-        "hide_side_toolbar": false, "allow_symbol_change": false, "timezone": "Asia/Shanghai"
-    }});
-
-    widget.onChartReady(function() {{
-        var chart = widget.chart();
-        // 1. 画活跃虚线 (实时)
-        var activePrices = {json.dumps(active_prices)};
-        activePrices.forEach(function(p) {{
-            chart.createShape({{time: 0, price: p}}, {{
-                shape: 'horizontal_line', lock: true,
-                overrides: {{ linecolor: "#02C076", linestyle: 2, linewidth: 2, showLabel: true }}
-            }});
-        }});
-        // 2. 画永久 K 线标记 (W/L)
-        var marks = {json.dumps(history_marks)};
-        marks.forEach(function(m) {{
-            chart.createShape({{time: m.time, price: m.price}}, {{
-                shape: 'text', lock: true, text: m.label,
-                overrides: {{ color: m.color, fontsize: 14, fontBold: true, drawBorder: true, borderColor: m.color, backgroundColor: "#FFFFFF" }}
-            }});
-        }});
-    }});
-</script>
-"""
-
-# ==========================================
 # 7. 主界面渲染 (修正 ValueError 处理)
 # ==========================================
 c1, c2, c3 = st.columns(3)
@@ -231,3 +185,4 @@ if st.session_state.orders:
             "状态/结果": od['结果'] if od['结果'] else f"倒计时 {int(rem)}s"
         })
     st.table(history)
+
