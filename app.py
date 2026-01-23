@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
-from websocket import create_connection
+#from websocket import create_connection
 
 # ==================================================
 # 页面设置 & 样式（Binance 亮色）
@@ -216,3 +216,4 @@ if col2.button("🔴 看跌 DOWN"):
             "result":None
         })
         st.rerun()
+
