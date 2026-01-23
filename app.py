@@ -154,20 +154,24 @@ tv_html = f"""
 """
 
 # ==========================================
-# 6. 主界面 UI 渲染 (已修正格式化错误)
+# 6. 主界面 UI 渲染 (恢复实时行情 + 修正语法)
 # ==========================================
 c1, c2, c3 = st.columns(3)
 
-# 预先处理好要显示的字符串
-balance_str = f"{st.session_state.balance:,.2f}"
-price_str = f"{current_price:,.2f}" if current_price else "连接中..."
-
+# 1. 余额显示
 with c1: 
-    st.markdown(f"<div class='metric-card'><b>账户余额</b><br><h2>${balance_str}</h2></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='metric-card'><b>账户余额</b><br><h2>${st.session_state.balance:,.2f}</h2></div>", unsafe_allow_html=True)
 
-with c2: 
-    st.markdown(f"<div class='metric-card'><b>实时价格</b><br><h2>${price_str}</h2></div>", unsafe_allow_html=True)
+# 2. 实时价格显示 (核心修复点：把逻辑拆开，确保 current_price 有值才显示数字)
+with c2:
+    if current_price:
+        # 只要有价格，就显示格式化后的数字
+        st.markdown(f"<div class='metric-card'><b>实时价格</b><br><h2>${current_price:,.2f}</h2></div>", unsafe_allow_html=True)
+    else:
+        # 没拿到价格时，显示正在同步，不让程序崩溃
+        st.markdown(f"<div class='metric-card'><b>实时价格</b><br><h2>📡 同步中...</h2></div>", unsafe_allow_html=True)
 
+# 3. 胜率显示
 with c3:
     settled_list = [o for o in st.session_state.orders if o.get('状态') == '已结算']
     wr = (len([o for o in settled_list if o['结果'] == 'W']) / len(settled_list) * 100) if settled_list else 0
@@ -209,4 +213,5 @@ if st.session_state.orders:
             "状态/结果": status_text
         })
     st.table(df_data)
+
 
