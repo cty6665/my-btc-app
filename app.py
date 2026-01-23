@@ -8,48 +8,11 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. 页面配置与 UI 增强 (针对手机端优化)
-# ==========================================
-st.set_page_config(
-    page_title="Gemini Pro Terminal",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
-
-st.markdown("""
-    <style>
-    /* 全局样式 */
-    .stApp { background-color: #FFFFFF; color: #000; }
-    
-    /* 指标卡片 */
-    .metric-card { 
-        background: #f8f9fa; padding: 12px; border-radius: 10px; 
-        border-left: 5px solid #FCD535; box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
-        margin-bottom: 10px;
-    }
-
-    /* 下单按钮：手机端超大尺寸，方便盲操 */
-    .stButton>button {
-        width: 100% !important;
-        height: 70px !important;
-        font-size: 22px !important;
-        font-weight: bold !important;
-        border-radius: 12px !important;
-        margin-bottom: 5px;
-    }
-    
-    /* 移动端间距微调 */
-    @media (max-width: 640px) {
-        .block-container { padding: 0.5rem !important; }
-        .stMetric { margin-bottom: 0px !important; }
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# 2. 数据库持久化逻辑
+# 1. 数据库持久化
 # ==========================================
 DB_FILE = "trading_db.json"
+st.set_page_config(page_title="Binance Pro Terminal", layout="wide", initial_sidebar_state="collapsed")
+
 def load_db():
     if os.path.exists(DB_FILE):
         try:
@@ -58,51 +21,72 @@ def load_db():
                 balance = data.get('balance', 1000.0)
                 orders = data.get('orders', [])
                 for od in orders:
-                    for key in ['开仓时间', '结算时间', '平仓时间']:
-                        if od.get(key) and isinstance(od[key], str) and od[key] != "-":
-                            try: od[key] = datetime.strptime(od[key], '%Y-%m-%d %H:%M:%S')
-                            except: pass
+                    if isinstance(od.get('结算时间'), str):
+                        od['结算时间'] = datetime.strptime(od['结算时间'], '%Y-%m-%d %H:%M:%S')
                 return balance, orders
         except: return 1000.0, []
     return 1000.0, []
 
 def save_db(balance, orders):
-    serialized = []
+    serialized_orders = []
     for od in orders:
         temp = od.copy()
-        for key in ['开仓时间', '结算时间', '平仓时间']:
-            if isinstance(temp.get(key), datetime):
-                temp[key] = temp[key].strftime('%Y-%m-%d %H:%M:%S')
-        serialized.append(temp)
+        if isinstance(temp.get('结算时间'), datetime):
+            temp['结算时间'] = temp['结算时间'].strftime('%Y-%m-%d %H:%M:%S')
+        serialized_orders.append(temp)
     with open(DB_FILE, "w") as f:
-        json.dump({"balance": balance, "orders": serialized}, f, indent=4)
+        json.dump({"balance": balance, "orders": serialized_orders}, f)
 
 if 'balance' not in st.session_state:
     st.session_state.balance, st.session_state.orders = load_db()
 
-# 5秒全局自动刷新
+# --- 【手机优化点 1】增强型 CSS 注入 ---
+st.markdown("""
+<style>
+    .stApp { background:#FFF; }
+    /* 下单按钮在手机上变得更大、更好按 */
+    .stButton button { 
+        background:#FCD535 !important; 
+        color:#000 !important; 
+        font-weight:bold !important;
+        height: 60px !important; /* 增加高度 */
+        font-size: 18px !important; /* 字体加大 */
+        border-radius: 10px !important;
+    }
+    /* 针对手机窄屏减少容器边距 */
+    @media (max-width: 640px) {
+        .block-container { padding: 1rem 0.5rem !important; }
+        .stMetric { margin-bottom: 0.5rem !important; }
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st_autorefresh(interval=5000, key="global_refresh")
 
 # ==========================================
-# 3. 核心行情接口
+# 2. 行情获取
 # ==========================================
 def get_price(symbol):
-    # 使用备用接口确保不挂加速器也能尽可能访问
+    headers = {'X-MBX-APIKEY': "OV8COob7B14HYTG100sMaNPTkhSJ01dpqFVZSQa2HdRZRVhxBrwHdOFAIFNuWS8t"}
     try:
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=2).json()
+        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=headers, timeout=2).json()
         return float(res['price'])
     except:
-        return None
+        try:
+            g_sym = symbol.replace("USDT", "_USDT")
+            res = requests.get(f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={g_sym}", timeout=2).json()
+            return float(res[0]['last'])
+        except: return None
 
 # ==========================================
-# 4. 侧边栏控制面板
+# 3. 界面与参数控制
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 交易设置")
-    coin = st.selectbox("选择币种", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0)
-    duration = st.radio("结算时间", [5, 10, 30, 60], format_func=lambda x: f"{x}分钟")
-    bet = st.number_input("下单金额 (U)", 10.0, 5000.0, 100.0)
-    if st.button("🚨 清空所有数据"):
+    st.header("⚙️ 终端控制")
+    coin = st.selectbox("选择交易对", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0)
+    duration = st.radio("结算周期", [5, 10, 30, 60], format_func=lambda x: f"{x} 分钟", index=0)
+    bet = st.number_input("下单金额 (U)", 10.0, 1000.0, 50.0)
+    if st.button("🚨 清空记录并重置"):
         st.session_state.balance, st.session_state.orders = 1000.0, []
         save_db(1000.0, [])
         st.rerun()
@@ -110,29 +94,45 @@ with st.sidebar:
 current_price = get_price(coin)
 now = datetime.now()
 
-# 自动结算逻辑
+# 结算逻辑 (保持原样)
 if current_price:
     updated = False
     for od in st.session_state.orders:
         if od.get("状态") == "待结算" and now >= od.get("结算时间"):
-            p_close = get_price(od["资产"])
+            p_close = get_price(od.get("资产", coin))
             if p_close:
-                od["平仓价"], od["平仓时间"] = p_close, now
+                od["平仓价"] = p_close
                 win = (od["方向"] == "看涨" and od["平仓价"] > od["开仓价"]) or \
                       (od["方向"] == "看跌" and od["平仓价"] < od["开仓价"])
                 if win: st.session_state.balance += od["金额"] * 1.8
-                od.update({"状态": "已结算", "结果": "W" if win else "L", "收益": (od["金额"]*0.8 if win else -od["金额"])})
+                od.update({"状态": "已结算", "结果": "W" if win else "L", "收益": (od["金额"] * 0.8) if win else -od["金额"]})
                 updated = True
     if updated: save_db(st.session_state.balance, st.session_state.orders)
 
 # ==========================================
-# 5. 【核心】指标预装版图表渲染
+# 4. 数据统计计算
 # ==========================================
-# 已锁定指标：MACD + Bollinger Bands + Volume
+settled_orders = [o for o in st.session_state.orders if o.get("状态") == "已结算"]
+today_str = now.strftime('%Y-%m-%d')
+today_orders = [o for o in settled_orders if o.get("结算时间").strftime('%Y-%m-%d') == today_str]
+today_pnl = sum([o.get("收益", 0) for o in today_orders])
+today_win_rate = (len([o for o in today_orders if o.get("结果") == "W"]) / len(today_orders) * 100) if today_orders else 0
+total_pnl = sum([o.get("收益", 0) for o in settled_orders])
+total_win_rate = (len([o for o in settled_orders if o.get("结果") == "W"]) / len(settled_orders) * 100) if settled_orders else 0
+
+# ==========================================
+# 5. UI 布局 (自适应优化)
+# ==========================================
+c1, c2 = st.columns(2)
+c1.metric("账户余额", f"${st.session_state.balance:,.2f}")
+c2.metric(f"{coin} 实时价", f"${current_price:,.2f}" if current_price else "同步中")
+
+# --- 【手机优化点 2】指标预装版图表 ---
 tv_html = f"""
-<div id="tv_container" style="height:380px;"></div>
-<script src="https://s3.tradingview.com/tv.js"></script>
-<script>
+<div style="height:400px;">
+    <script src="https://s3.tradingview.com/tv.js"></script>
+    <div id="tv-chart" style="height:400px;"></div>
+    <script>
     new TradingView.widget({{
         "autosize": true,
         "symbol": "BINANCE:{coin}",
@@ -140,78 +140,63 @@ tv_html = f"""
         "theme": "light",
         "style": "1",
         "locale": "zh_CN",
-        "container_id": "tv_container",
+        "container_id": "tv-chart",
         "hide_side_toolbar": false,
         "allow_symbol_change": false,
         "timezone": "Asia/Shanghai",
         "hide_volume": false,
         "studies": [
-            "BB@tv-basicstudies",
-            "MACD@tv-basicstudies"
+            "BB@tv-basicstudies",      // 布林带
+            "MACD@tv-basicstudies"     // MACD
         ]
     }});
-</script>
+    </script>
+</div>
 """
+components.html(tv_html, height=400)
 
-# ==========================================
-# 6. 主界面 UI 渲染 (恢复实时行情 + 修正语法)
-# ==========================================
-c1, c2, c3 = st.columns(3)
-
-# 1. 余额显示
-with c1: 
-    st.markdown(f"<div class='metric-card'><b>账户余额</b><br><h2>${st.session_state.balance:,.2f}</h2></div>", unsafe_allow_html=True)
-
-# 2. 实时价格显示 (核心修复点：把逻辑拆开，确保 current_price 有值才显示数字)
-with c2:
-    if current_price:
-        # 只要有价格，就显示格式化后的数字
-        st.markdown(f"<div class='metric-card'><b>实时价格</b><br><h2>${current_price:,.2f}</h2></div>", unsafe_allow_html=True)
-    else:
-        # 没拿到价格时，显示正在同步，不让程序崩溃
-        st.markdown(f"<div class='metric-card'><b>实时价格</b><br><h2>📡 同步中...</h2></div>", unsafe_allow_html=True)
-
-# 3. 胜率显示
-with c3:
-    settled_list = [o for o in st.session_state.orders if o.get('状态') == '已结算']
-    wr = (len([o for o in settled_list if o['结果'] == 'W']) / len(settled_list) * 100) if settled_list else 0
-    st.markdown(f"<div class='metric-card'><b>综合胜率</b><br><h2>{wr:.1f}%</h2></div>", unsafe_allow_html=True)
-
-# 渲染图表
-components.html(tv_html, height=390)
-
-# 下单区 (并排大按钮)
+# 下单按钮 (并排显示)
 col_up, col_down = st.columns(2)
-if col_up.button("🟢 买入看涨 (UP)") and current_price:
+if col_up.button("🟢 看涨 (UP)") and current_price:
     if st.session_state.balance >= bet:
         st.session_state.balance -= bet
-        st.session_state.orders.append({"资产": coin, "方向": "看涨", "开仓价": current_price, "金额": bet, "开仓时间": now, "结算时间": now + timedelta(minutes=duration), "状态": "待结算"})
-        save_db(st.session_state.balance, st.session_state.orders)
-        st.rerun()
-
-if col_down.button("🔴 卖出看跌 (DOWN)") and current_price:
-    if st.session_state.balance >= bet:
-        st.session_state.balance -= bet
-        st.session_state.orders.append({"资产": coin, "方向": "看跌", "开仓价": current_price, "金额": bet, "开仓时间": now, "结算时间": now + timedelta(minutes=duration), "状态": "待结算"})
-        save_db(st.session_state.balance, st.session_state.orders)
-        st.rerun()
-
-# 交易账本
-st.write("---")
-st.subheader("📋 实时执行账本")
-if st.session_state.orders:
-    df_data = []
-    for od in reversed(st.session_state.orders[-12:]):
-        rem_sec = (od.get("结算时间", now) - now).total_seconds()
-        status_text = od.get('结果', f"倒计时 {int(rem_sec)}s" if rem_sec > 0 else "结算中...")
-        df_data.append({
-            "资产": od['资产'],
-            "方向": "涨 ↗️" if od['方向'] == "看涨" else "跌 ↘️",
-            "入场价": f"{od['开仓价']:,.2f}",
-            "入场时间": od['开仓时间'].strftime('%H:%M:%S'),
-            "平仓时间": od['平仓时间'].strftime('%H:%M:%S') if od.get('平仓时间') else "-",
-            "状态/结果": status_text
+        st.session_state.orders.append({
+            "资产": coin, "方向": "看涨", "开仓价": current_price, "平仓价": None,
+            "金额": bet, "结算时间": now + timedelta(minutes=duration), "状态": "待结算", "结果": None
         })
-    st.table(df_data)
+        save_db(st.session_state.balance, st.session_state.orders)
+        st.rerun()
 
+if col_down.button("🔴 看跌 (DOWN)") and current_price:
+    if st.session_state.balance >= bet:
+        st.session_state.balance -= bet
+        st.session_state.orders.append({
+            "资产": coin, "方向": "看跌", "开仓价": current_price, "平仓价": None,
+            "金额": bet, "结算时间": now + timedelta(minutes=duration), "状态": "待结算", "结果": None
+        })
+        save_db(st.session_state.balance, st.session_state.orders)
+        st.rerun()
 
+# 战报展示
+st.markdown(f"""
+---
+### 📈 实时战报
+| 统计维度 | 今日盈亏 | 今日胜率 | 总盈亏 | 总胜率 |
+| :--- | :--- | :--- | :--- | :--- |
+| **数值** | <span style='color:{"green" if today_pnl >= 0 else "red"}'>${today_pnl:.2f}</span> | {today_win_rate:.1f}% | <span style='color:{"green" if total_pnl >= 0 else "red"}'>${total_pnl:.2f}</span> | {total_win_rate:.1f}% |
+""", unsafe_allow_html=True)
+
+# 历史记录
+st.subheader("📋 交易流水")
+if st.session_state.orders:
+    df_show = []
+    for od in reversed(st.session_state.orders[-10:]):
+        rem = (od.get("结算时间", now) - now).total_seconds()
+        df_show.append({
+            "资产": od.get("资产", "未知"),
+            "方向": "上涨 ↗️" if od.get("方向") == "看涨" else "下跌 ↘️",
+            "开仓基准": f"{od.get('开仓价', 0):,.2f}",
+            "平仓/实时": f"{od.get('平仓价', 0):,.2f}" if od.get('平仓价') else "运行中",
+            "盈亏结果": od.get("结果") if od.get("结果") else f"{int(rem)}s"
+        })
+    st.table(df_show)
