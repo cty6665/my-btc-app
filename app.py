@@ -2,131 +2,120 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
-import os
-import json
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
 # ==========================================
-# 1. 基础配置与数据存储
+# 1. 基础配置
 # ==========================================
 st.set_page_config(page_title="Pro Terminal", layout="wide", initial_sidebar_state="collapsed")
-DB_FILE = "user_data.json"
 
 if 'balance' not in st.session_state:
     st.session_state.balance = 1000.0
     st.session_state.orders = []
 
 # ==========================================
-# 2. 你的“必通”报价逻辑 (复刻自 app.py.txt)
+# 2. 核心：四重渠道抓取价格 (解决重连问题)
 # ==========================================
-def get_verified_price(symbol):
+def get_price_final_solution(symbol):
+    # 渠道 1: 币安 K 线接口 (你验证过的)
     try:
-        # 使用你验证过的 klines 接口
-        url = "https://api.binance.com/api/v3/klines"
-        params = {"symbol": symbol, "interval": "1m", "limit": 1}
-        res = requests.get(url, params=params, timeout=1.5)
-        if res.status_code == 200:
-            return float(res.json()[-1][4])
-    except:
-        return None
+        res = requests.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=1", timeout=0.8)
+        return float(res.json()[-1][4])
+    except: pass
+
+    # 渠道 2: 币安备用 API 节点 (api3)
+    try:
+        res = requests.get(f"https://api3.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=0.8)
+        return float(res.json()['price'])
+    except: pass
+
+    # 渠道 3: Crypto.com 公共接口 (不容易被封)
+    try:
+        res = requests.get(f"https://api.crypto.com/v2/public/get-ticker?instrument_name={symbol.replace('USDT', '_USDT')}", timeout=0.8)
+        return float(res.json()['result']['data'][0]['a'])
+    except: pass
+
+    # 渠道 4: Gate.io 公共接口 (极稳)
+    try:
+        res = requests.get(f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={symbol.replace('USDT', '_USDT')}", timeout=0.8)
+        return float(res.json()[0]['last'])
+    except: pass
+
     return None
 
 # ==========================================
-# 3. 页面布局
+# 3. 界面布局 (TV图表 + 实时价格)
 # ==========================================
-# --- 顶部固定区 ---
-st.markdown(f"<h2 style='text-align:center;'>账户余额: ${st.session_state.balance:,.2f}</h2>", unsafe_allow_html=True)
+# 获取最新价
+coin = st.sidebar.selectbox("品种", ["BTCUSDT", "ETHUSDT"], index=0)
+price = get_price_multi_source = get_price_final_solution(coin)
 
-# 侧边栏
-with st.sidebar:
-    coin = st.selectbox("交易品种", ["BTCUSDT", "ETHUSDT"], index=0)
-    duration = st.selectbox("周期(分钟)", [1, 5, 10, 30, 60], index=2)
-    amt = st.number_input("下单金额", 10.0, 2000.0, 50.0)
-    if st.button("🚨 清空记录"):
-        st.session_state.orders = []
-        st.rerun()
-
-# 获取最新报价
-price = get_verified_price(coin)
-
-# --- 主交互区 ---
 col_chart, col_trade = st.columns([3, 1])
 
 with col_chart:
-    # 【关键】使用缓存保护 TV 图表，确保它不随价格刷新而变
+    # 保持 TV 图表不变，且不随刷新重置
     @st.cache_resource
-    def display_tv_chart(symbol):
-        tv_html = f"""
+    def load_tv(s):
+        html = f"""
             <div id="tv-chart" style="height:500px;"></div>
             <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
             <script type="text/javascript">
             new TradingView.widget({{
-              "autosize": true, "symbol": "BINANCE:{symbol}", "interval": "1",
+              "autosize": true, "symbol": "BINANCE:{s}", "interval": "1",
               "theme": "light", "style": "1", "locale": "zh_CN",
               "container_id": "tv-chart", "hide_side_toolbar": false,
-              "allow_symbol_change": true, "details": true,
-              "studies": ["MAExp@tv-basicstudies"]
+              "allow_symbol_change": true, "details": true
             }});
             </script>
         """
-        return components.html(tv_html, height=520)
-    
-    display_tv_chart(coin)
+        return components.html(html, height=520)
+    load_tv(coin)
 
 with col_trade:
-    # 价格跳动区
+    st.metric("余额", f"${st.session_state.balance:,.2f}")
+    
     if price:
         st.markdown(f"""
-            <div style="background:#f0f2f6; padding:15px; border-radius:10px; text-align:center; border:2px solid #02C076;">
-                <p style="margin:0; font-size:14px; color:#666;">实时执行价</p>
-                <h1 style="margin:0; color:#02C076; font-family:monospace;">{price:,.2f}</h1>
+            <div style="background:#02C076; padding:15px; border-radius:10px; text-align:center;">
+                <p style="color:white; margin:0;">实时执行价</p>
+                <h1 style="color:white; margin:0; font-size:35px;">{price:,.2f}</h1>
             </div>
         """, unsafe_allow_html=True)
     else:
-        st.error("报价重连中...")
+        st.error("🆘 所有接口均被拦截，请尝试刷新页面或检查网络")
 
-    st.write("") # 间距
+    # 下单区
+    duration = st.selectbox("周期", [1, 5, 10, 30, 60])
+    amt = st.number_input("金额", 10, 1000, 50)
+    
+    if st.button("🟢 看涨", use_container_width=True) and price:
+        st.session_state.balance -= amt
+        st.session_state.orders.append({
+            "dir": "涨", "p": price, "amt": amt, 
+            "end": datetime.now() + timedelta(minutes=duration), "status": "待结算"
+        })
+        st.rerun()
 
-    # 下单按钮
-    if st.button("🟢 看涨 (UP)", use_container_width=True):
-        if price:
-            st.session_state.balance -= amt
-            st.session_state.orders.append({
-                "time": datetime.now(), "end": datetime.now() + timedelta(minutes=duration),
-                "dir": "涨", "p": price, "amt": amt, "status": "待结算"
-            })
-            st.toast("下单成功!")
-            st.rerun()
-
-    if st.button("🔴 看跌 (DOWN)", use_container_width=True):
-        if price:
-            st.session_state.balance -= amt
-            st.session_state.orders.append({
-                "time": datetime.now(), "end": datetime.now() + timedelta(minutes=duration),
-                "dir": "跌", "p": price, "amt": amt, "status": "待结算"
-            })
-            st.toast("下单成功!")
-            st.rerun()
+    if st.button("🔴 看跌", use_container_width=True) and price:
+        st.session_state.balance -= amt
+        st.session_state.orders.append({
+            "dir": "跌", "p": price, "amt": amt, 
+            "end": datetime.now() + timedelta(minutes=duration), "status": "待结算"
+        })
+        st.rerun()
 
 # ==========================================
-# 4. 自动化结算逻辑 (后台运行)
+# 4. 自动结算
 # ==========================================
-now = datetime.now()
 if price:
+    now = datetime.now()
     for od in st.session_state.orders:
         if od["status"] == "待结算" and now >= od["end"]:
             win = (od["dir"] == "涨" and price > od["p"]) or (od["dir"] == "跌" and price < od["p"])
             st.session_state.balance += (od["amt"] * 1.8) if win else 0
             od["status"] = "WIN" if win else "LOSS"
 
-# 简易记录
-st.write("---")
-for od in reversed(st.session_state.orders[-3:]):
-    st.write(f"【{od['status']}】{od['dir']} @{od['p']} (到期:{od['end'].strftime('%H:%M:%S')})")
-
-# 2秒一次强制刷新（只刷价格和状态，不刷图表）
+# 2秒自动重跑刷新价格
 time.sleep(2)
 st.rerun()
-
-
