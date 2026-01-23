@@ -8,144 +8,170 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. 配置与持久化
+# 1. 配置私有密钥与持久化 (保留你的通行证)
 # ==========================================
 API_KEY = "OV8COob7B14HYTG100sMaNPTkhSJ01dpqFVZSQa2HdRZRVhxBrwHdOFAIFNuWS8t"
 DATA_FILE = "trading_data.csv"
 
-st.set_page_config(page_title="Binance Pro", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="Binance Private Pro", layout="wide", initial_sidebar_state="collapsed")
 
-def load_balance():
+def load_data():
     if os.path.exists(DATA_FILE):
-        try: return float(pd.read_csv(DATA_FILE)['balance'].iloc[0])
+        try:
+            df = pd.read_csv(DATA_FILE)
+            return float(df['balance'].iloc[0])
         except: return 1000.0
     return 1000.0
 
-def save_balance(balance):
-    pd.DataFrame({"balance": [balance]}).to_csv(DATA_FILE, index=False)
+def save_data(balance):
+    df = pd.DataFrame({"balance": [balance], "last_update": [datetime.now()]})
+    df.to_csv(DATA_FILE, index=False)
 
-if 'balance' not in st.session_state: st.session_state.balance = load_balance()
-if 'orders' not in st.session_state: st.session_state.orders = []
+if 'balance' not in st.session_state:
+    st.session_state.balance = load_data()
+if 'orders' not in st.session_state:
+    st.session_state.orders = []
 
-# 样式
+# CSS 样式 (保留你的简洁白色风格)
 st.markdown("""
 <style>
-    .stApp { background-color: #FFFFFF; color: #000; }
-    [data-testid="stMetricValue"] { color: #02C076 !important; font-size: 24px !important; }
-    .stButton button { width: 100%; height: 50px; font-weight: bold; }
-    .order-row { border-bottom: 1px solid #eee; padding: 10px 0; font-size: 14px; }
+    .stApp { background-color: #FFFFFF; color: #000000; }
+    [data-testid="stMetricValue"] { color: #000000 !important; font-weight: bold; }
+    .stButton button { width: 100%; height: 60px; font-size: 20px !important; font-weight: bold; background-color: #FCD535 !important; color: #000 !important; border: none; }
 </style>
 """, unsafe_allow_html=True)
 
-# 自动刷新 (5秒一次)
-st_autorefresh(interval=5000, key="price_refresh")
+# 自动刷新：5秒一次
+st_autorefresh(interval=5000, key="pro_refresh")
 
 # ==========================================
-# 2. 增强型价格获取 (多路保障)
+# 2. 融合版行情获取 (你的特权 KEY + 稳健备份)
 # ==========================================
-def get_robust_price(symbol):
-    # 路径 A: 私有 Key 请求
+def get_robust_private_price(symbol):
+    headers = {'X-MBX-APIKEY': API_KEY}
+    
+    # 路径 A: 你的私有 API 路径 (优先使用通行证)
     try:
-        headers = {'X-MBX-APIKEY': API_KEY}
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=headers, timeout=1).json()
-        return float(res['price'])
-    except: pass
+        url = f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}"
+        res = requests.get(url, headers=headers, timeout=1.5).json()
+        if 'price' in res:
+            return float(res['price'])
+    except:
+        pass
 
-    # 路径 B: 你验证最稳的 K 线接口
+    # 路径 B: 必通 K 线备份路径 (如果 A 被拦截，自动切到这里)
     try:
-        res = requests.get(f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=1", timeout=1).json()
+        url = "https://api.binance.com/api/v3/klines"
+        params = {"symbol": symbol, "interval": "1m", "limit": 1}
+        res = requests.get(url, headers=headers, params=params, timeout=1.5).json()
         return float(res[-1][4])
-    except: pass
+    except:
+        pass
 
-    # 路径 C: 备用节点
+    # 路径 C: 备用公共节点 (api3)
     try:
-        res = requests.get(f"https://api3.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=1).json()
+        url = f"https://api3.binance.com/api/v3/ticker/price?symbol={symbol}"
+        res = requests.get(url, timeout=1.5).json()
         return float(res['price'])
-    except: return None
+    except:
+        return None
 
 # ==========================================
-# 3. 核心逻辑
+# 3. 核心交易逻辑
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 设置")
-    coin = st.selectbox("选择品种", ["BTCUSDT", "ETHUSDT"])
-    duration = st.selectbox("结算周期(分)", [1, 5, 10, 30, 60], index=2)
-    bet = st.number_input("金额", 10.0, 1000.0, 50.0)
-    if st.button("🚨 重置系统"):
+    st.header("⚙️ 账户控制")
+    coin = st.selectbox("币种选择", ["BTCUSDT", "ETHUSDT", "SOLUSDT"])
+    duration = st.radio("结算周期(分钟)", [1, 5, 10, 30], index=2)
+    bet = st.number_input("下单金额", 10.0, 1000.0, 50.0)
+    if st.button("🚨 重置账户"):
         st.session_state.balance = 1000.0
         st.session_state.orders = []
-        save_balance(1000.0)
+        save_data(1000.0)
         st.rerun()
 
-current_price = get_robust_price(coin)
+current_price = get_robust_private_price(coin)
 now = datetime.now()
 
-# 自动结算逻辑
+# 自动结算逻辑 (含开平仓价对比)
 if current_price:
     updated = False
     for od in st.session_state.orders:
-        if od["状态"] == "等待中" and now >= od["结算时间"]:
+        if od["状态"] == "待结算" and now >= od["结算时间"]:
             od["平仓价"] = current_price
             win = (od["方向"] == "看涨" and od["平仓价"] > od["开仓价"]) or \
                   (od["方向"] == "看跌" and od["平仓价"] < od["开仓价"])
-            if win: st.session_state.balance += od["金额"] * 1.8
-            od["状态"], od["结果"] = "已结算", ("W" if win else "L")
+            if win:
+                st.session_state.balance += od["金额"] * 1.8
+            od.update({
+                "状态": "已结算", 
+                "结果": "W" if win else "L",
+                "颜色": "#02C076" if win else "#CF304A"
+            })
             updated = True
-    if updated: save_balance(st.session_state.balance)
+    if updated:
+        save_data(st.session_state.balance)
 
 # ==========================================
-# 4. 界面展示
+# 4. UI 布局
 # ==========================================
-c1, c2 = st.columns(2)
-c1.metric("可用余额", f"${st.session_state.balance:,.2f}")
-c2.metric("实时价格", f"{current_price if current_price else '获取中...'}")
+c1, c2, c3 = st.columns(3)
+c1.metric("账户余额", f"${st.session_state.balance:,.2f}")
+c2.metric("实时价格", f"${current_price if current_price else '重连中...'}")
+c3.metric("当前品种", coin)
 
-# TV 图表
+# TradingView 插件
 tv_html = f"""
-    <div id="tv-chart" style="height:400px;"></div>
-    <script src="https://s3.tradingview.com/tv.js"></script>
-    <script>
-    new TradingView.widget({{"autosize": true, "symbol": "BINANCE:{coin}", "interval": "1", "theme": "light", "style": "1", "locale": "zh_CN", "container_id": "tv-chart"}});
+    <div id="tv-chart" style="height:420px;"></div>
+    <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+    <script type="text/javascript">
+    new TradingView.widget({{
+      "autosize": true, "symbol": "BINANCE:{coin}", "interval": "1",
+      "theme": "light", "style": "1", "locale": "zh_CN", "container_id": "tv-chart"
+    }});
     </script>
 """
-components.html(tv_html, height=400)
+components.html(tv_html, height=420)
 
-# 交易按钮
+# 下单按钮
 col_up, col_down = st.columns(2)
-if col_up.button("🟢 看涨 (UP)") and current_price:
-    if st.session_state.balance >= bet:
+if col_up.button("🟢 看涨 (UP)"):
+    if st.session_state.balance >= bet and current_price:
         st.session_state.balance -= bet
-        save_balance(st.session_state.balance)
+        save_data(st.session_state.balance)
         st.session_state.orders.append({
             "方向": "看涨", "开仓价": current_price, "平仓价": None,
-            "金额": bet, "结算时间": now + timedelta(minutes=duration), "状态": "等待中", "结果": None
+            "金额": bet, "开仓时间": now, "结算时间": now + timedelta(minutes=duration),
+            "状态": "待结算", "结果": None
         })
         st.rerun()
 
-if col_down.button("🔴 看跌 (DOWN)") and current_price:
-    if st.session_state.balance >= bet:
+if col_down.button("🔴 看跌 (DOWN)"):
+    if st.session_state.balance >= bet and current_price:
         st.session_state.balance -= bet
-        save_balance(st.session_state.balance)
+        save_data(st.session_state.balance)
         st.session_state.orders.append({
             "方向": "看跌", "开仓价": current_price, "平仓价": None,
-            "金额": bet, "结算时间": now + timedelta(minutes=duration), "状态": "等待中", "结果": None
+            "金额": bet, "开仓时间": now, "结算时间": now + timedelta(minutes=duration),
+            "状态": "待结算", "结果": None
         })
         st.rerun()
 
-# 交易流水 (包含开仓价、平仓价对比)
-st.write("📋 交易流水")
+# 实时流水表格 (开平仓价对比)
+st.write("📋 实时流水")
 if st.session_state.orders:
-    # 转换为表格显示，更清晰直观
-    df_history = []
+    history_data = []
     for od in reversed(st.session_state.orders[-8:]):
         rem = (od["结算时间"] - now).total_seconds()
-        res = od["结果"] if od["结果"] else (f"{int(rem)}s" if rem > 0 else "结算中")
-        df_history.append({
+        countdown = f"{int(rem)}s" if rem > 0 else "结算中"
+        
+        history_data.append({
             "方向": od["方向"],
+            "开仓价": f"{od['开仓价']:.2f}",
+            "平仓价": f"{od['平仓价']:.2f}" if od['平仓价'] else "---",
             "金额": f"{od['金额']}U",
-            "开仓价": od["开仓价"],
-            "平仓价": od["平仓价"] if od["平仓价"] else "---",
             "状态": od["状态"],
-            "结果": res
+            "结果": od["结果"] if od["结果"] else countdown
         })
-    st.table(df_history)
+    st.table(history_data)
+
