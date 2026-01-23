@@ -138,34 +138,79 @@ for o in st.session_state.orders:
             "color": "#02C076" if o['结果'] == "W" else "#CF304A"
         })
 
+# ==========================================
+# 6. 【加固版】TV API 注入 - 强制渲染虚线与标记
+# ==========================================
+# 准备数据
+active_orders_js = [
+    {"price": o['开仓价'], "color": "#02C076" if o['方向'] == "看涨" else "#CF304A"} 
+    for o in st.session_state.orders if o['状态'] == '待结算' and o['资产'] == coin
+]
+history_marks_js = [
+    {"time": int(o['开仓时间'].timestamp()), "price": o['开仓价'], "res": o['结果']}
+    for o in st.session_state.orders if o.get("状态") == "已结算" and o.get("资产") == coin
+]
+
 tv_html = f"""
 <div id="tv_chart_container" style="height:450px;"></div>
 <script src="https://s3.tradingview.com/tv.js"></script>
 <script>
-    var widget = new TradingView.widget({{
+    var tvWidget = new TradingView.widget({{
         "autosize": true, "symbol": "BINANCE:{coin}", "interval": "1",
         "theme": "light", "style": "1", "locale": "zh_CN", "container_id": "tv_chart_container",
-        "hide_side_toolbar": false, "allow_symbol_change": false, "timezone": "Asia/Shanghai"
+        "hide_side_toolbar": false, "allow_symbol_change": false, "save_image": false,
+        "timezone": "Asia/Shanghai"
     }});
 
-    widget.onChartReady(function() {{
-        var chart = widget.chart();
-        // 1. 画活跃虚线 (实时)
-        var activePrices = {json.dumps(active_prices)};
-        activePrices.forEach(function(p) {{
-            chart.createShape({{time: 0, price: p}}, {{
-                shape: 'horizontal_line', lock: true,
-                overrides: {{ linecolor: "#02C076", linestyle: 2, linewidth: 2, showLabel: true }}
+    function renderShapes() {{
+        try {{
+            var chart = tvWidget.chart();
+            if (!chart) return; // 还没准备好就退出，等待下一轮重试
+
+            // 1. 清理旧形状（防止重叠）
+            chart.removeAllShapes();
+
+            // 2. 渲染待结算虚线
+            var active = {json.dumps(active_orders_js)};
+            active.forEach(function(o) {{
+                chart.createShape({{time: 0, price: o.price}}, {{
+                    shape: 'horizontal_line',
+                    lock: true,
+                    overrides: {{
+                        linecolor: o.color,
+                        linestyle: 2,
+                        linewidth: 2,
+                        showLabel: true,
+                        textcolor: o.color
+                    }}
+                }});
             }});
-        }});
-        // 2. 画永久 K 线标记 (W/L)
-        var marks = {json.dumps(history_marks)};
-        marks.forEach(function(m) {{
-            chart.createShape({{time: m.time, price: m.price}}, {{
-                shape: 'text', lock: true, text: m.label,
-                overrides: {{ color: m.color, fontsize: 14, fontBold: true, drawBorder: true, borderColor: m.color, backgroundColor: "#FFFFFF" }}
+
+            // 3. 渲染历史 W/L 箭头
+            var marks = {json.dumps(history_marks_js)};
+            marks.forEach(function(m) {{
+                var isWin = m.res === "W";
+                chart.createShape({{time: m.time, price: m.price}}, {{
+                    shape: isWin ? 'arrow_up' : 'arrow_down',
+                    lock: true,
+                    text: isWin ? "WIN (W)" : "LOSS (L)",
+                    overrides: {{
+                        color: isWin ? "#02C076" : "#CF304A",
+                        fontsize: 12,
+                        fontBold: true,
+                        showLabel: true,
+                        textcolor: isWin ? "#02C076" : "#CF304A"
+                    }}
+                }});
             }});
-        }});
+        }} catch(e) {{
+            console.log("Waiting for chart ready...");
+        }}
+    }}
+
+    // 关键：多重触发机制，确保线一定能画出来
+    tvWidget.onChartReady(function() {{
+        setTimeout(renderShapes, 500); // 延迟半秒确保渲染引擎就绪
     }});
 </script>
 """
@@ -231,3 +276,4 @@ if st.session_state.orders:
             "状态/结果": od['结果'] if od['结果'] else f"倒计时 {int(rem)}s"
         })
     st.table(history)
+
