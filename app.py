@@ -1,167 +1,147 @@
 import streamlit as st
 import pandas as pd
 import requests
+import json
 import os
-import time
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. 初始化与数据持久化
+# 1. 强化数据库逻辑 (记录与余额同步保存)
 # ==========================================
-DATA_FILE = "trading_data.csv"
-st.set_page_config(page_title="Pro Trader Terminal", layout="wide", initial_sidebar_state="collapsed")
+DB_FILE = "trading_db.json"
+st.set_page_config(page_title="Binance Pro Hybrid", layout="wide", initial_sidebar_state="collapsed")
 
-def load_data():
-    if os.path.exists(DATA_FILE):
-        try: return float(pd.read_csv(DATA_FILE)['balance'].iloc[0])
-        except: return 1000.0
-    return 1000.0
+def load_db():
+    """从JSON加载所有数据，确保重启不丢失记录"""
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r") as f:
+            data = json.load(f)
+            # 时间格式转换回对象
+            for od in data.get('orders', []):
+                od['结算时间'] = datetime.strptime(od['结算时间'], '%Y-%m-%d %H:%M:%S')
+            return data.get('balance', 1000.0), data.get('orders', [])
+    return 1000.0, []
 
-def save_data(balance):
-    pd.DataFrame({"balance": [balance]}).to_csv(DATA_FILE, index=False)
+def save_db(balance, orders):
+    """保存余额和所有订单到JSON"""
+    serialized_orders = []
+    for od in orders:
+        temp = od.copy()
+        if isinstance(temp['结算时间'], datetime):
+            temp['结算时间'] = temp['结算时间'].strftime('%Y-%m-%d %H:%M:%S')
+        serialized_orders.append(temp)
+    with open(DB_FILE, "w") as f:
+        json.dump({"balance": balance, "orders": serialized_orders}, f)
 
-if 'balance' not in st.session_state: st.session_state.balance = load_data()
-if 'orders' not in st.session_state: st.session_state.orders = []
+# 初始化：从文件读取，不再只靠内存
+if 'balance' not in st.session_state:
+    st.session_state.balance, st.session_state.orders = load_db()
 
-st.markdown("""
-<style>
-    .stApp { background-color: #FFFFFF; color: #000; }
-    .stButton button { background-color: #FCD535 !important; color: #000 !important; font-weight: bold; height: 50px; }
-    .up-arrow { color: #02C076; font-weight: bold; }
-    .down-arrow { color: #CF304A; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
-
+# 样式
+st.markdown("<style>.stApp{background:#FFF;}.stButton button{background:#FCD535!important;color:#000;font-weight:bold;}</style>", unsafe_allow_html=True)
 st_autorefresh(interval=5000, key="global_refresh")
 
 # ==========================================
-# 2. 多源行情抓取 (修复币种不联动问题)
+# 2. 增强型行情获取 (支持指定币种)
 # ==========================================
-def get_price_v4(symbol):
-    # 路径 1: 币安 (带 API KEY 权重)
+def get_price(symbol):
+    """支持传入特定symbol，解决以太变比特的问题"""
     try:
+        # 路径 A: 币安 API Key 通行证
         headers = {'X-MBX-APIKEY': "OV8COob7B14HYTG100sMaNPTkhSJ01dpqFVZSQa2HdRZRVhxBrwHdOFAIFNuWS8t"}
-        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=headers, timeout=1.5).json()
+        res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=headers, timeout=2).json()
         return float(res['price'])
-    except: pass
-
-    # 路径 2: Gate.io (格式转换: BTCUSDT -> BTC_USDT)
-    try:
-        gate_sym = symbol.replace("USDT", "_USDT")
-        res = requests.get(f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={gate_sym}", timeout=1.5).json()
-        return float(res[0]['last'])
-    except: pass
-    
-    return None
+    except:
+        try:
+            # 路径 B: Gate.io 备用
+            g_sym = symbol.replace("USDT", "_USDT")
+            res = requests.get(f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={g_sym}", timeout=2).json()
+            return float(res[0]['last'])
+        except: return None
 
 # ==========================================
-# 3. 侧边栏与核心变量
+# 3. 侧边栏
 # ==========================================
 with st.sidebar:
-    st.header("⚙️ 终端设置")
-    # 币种选择
+    st.header("⚙️ 终端控制")
     coin = st.selectbox("选择交易对", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0)
-    duration = st.radio("结算周期(分钟)", [1, 5, 10, 30], index=2)
+    duration = st.radio("周期(分)", [1, 5, 10], index=0)
     bet = st.number_input("下单金额", 10.0, 1000.0, 50.0)
-    if st.button("🚨 重置账户"):
-        st.session_state.balance = 1000.0
-        st.session_state.orders = []
-        save_data(1000.0)
+    if st.button("🚨 清空所有记录并充值"):
+        st.session_state.balance, st.session_state.orders = 1000.0, []
+        save_db(1000.0, [])
         st.rerun()
 
-# 实时获取当前选定币种的价格
-current_price = get_price_v4(coin)
+current_price = get_price(coin)
 now = datetime.now()
 
-# 自动结算逻辑
+# ==========================================
+# 4. 结算逻辑 (修复结算错位核心Bug)
+# ==========================================
 if current_price:
     updated = False
     for od in st.session_state.orders:
-        # 只结算对应币种且到期的订单
         if od["状态"] == "待结算" and now >= od["结算时间"]:
-            # 注意：平仓时需要获取该订单对应币种的价格，这里简化处理，
-            # 实际大规模交易建议在结算瞬间为每个币种调一次API
-            od["平仓价"] = current_price 
-            win = (od["方向"] == "看涨" and od["平仓价"] > od["开仓价"]) or \
-                  (od["方向"] == "看跌" and od["平仓价"] < od["开仓价"])
-            if win: st.session_state.balance += od["金额"] * 1.8
-            od.update({"状态": "已结算", "结果": "W" if win else "L"})
-            updated = True
-    if updated: save_data(st.session_state.balance)
+            # 💡 核心修复：根据订单里存的币种(od['资产'])去取价，而不是用当前选中的coin
+            p_close = get_price(od["资产"]) 
+            if p_close:
+                od["平仓价"] = p_close
+                win = (od["方向"] == "看涨" and od["平仓价"] > od["开仓价"]) or \
+                      (od["方向"] == "看跌" and od["平仓价"] < od["开仓价"])
+                if win: st.session_state.balance += od["金额"] * 1.8
+                od.update({"状态": "已结算", "结果": "W" if win else "L"})
+                updated = True
+    if updated: 
+        save_db(st.session_state.balance, st.session_state.orders)
 
 # ==========================================
-# 4. UI 布局
+# 5. UI 与 下单
 # ==========================================
-c1, c2, c3 = st.columns(3)
+c1, c2 = st.columns(2)
 c1.metric("账户余额", f"${st.session_state.balance:,.2f}")
-c2.metric(f"{coin} 实时价", f"${current_price:,.2f}" if current_price else "连接中...")
-c3.metric("周期", f"{duration} Min")
+c2.metric(f"{coin} 实时价", f"${current_price:,.2f}" if current_price else "连接中")
 
-# --- TradingView 图表 (集成下单虚线模拟) ---
-# 注意：TV 基础版插件无法直接通过 Python 画虚线，我们通过下方流水和视觉反馈来强化
-tv_html = f"""
-    <div id="tv-chart" style="height:450px;"></div>
-    <script src="https://s3.tradingview.com/tv.js"></script>
-    <script>
-    new TradingView.widget({{
-      "autosize": true, "symbol": "BINANCE:{coin}", "interval": "1",
-      "timezone": "Asia/Shanghai", "theme": "light", "style": "1",
-      "locale": "zh_CN", "container_id": "tv-chart", "hide_side_toolbar": false,
-      "allow_symbol_change": false, "details": true
-    }});
-    </script>
-"""
-components.html(tv_html, height=460)
+# TV 图表
+tv_html = f"""<div style="height:400px;"><script src="https://s3.tradingview.com/tv.js"></script>
+<script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"1","theme":"light","style":"1","locale":"zh_CN","container_id":"tv-chart"}});</script>
+<div id="tv-chart" style="height:400px;"></div></div>"""
+components.html(tv_html, height=400)
 
-# --- 交易按钮 ---
 col_up, col_down = st.columns(2)
-if col_up.button("🟢 看涨 (BUY UP)"):
-    if current_price and st.session_state.balance >= bet:
+# 下单：同时更新内存和硬盘
+if col_up.button("🟢 看涨 (UP)") and current_price:
+    if st.session_state.balance >= bet:
         st.session_state.balance -= bet
-        save_data(st.session_state.balance)
         st.session_state.orders.append({
-            "币种": coin, "方向": "看涨", "图标": "↗️", 
-            "开仓价": current_price, "平仓价": None, 
-            "金额": bet, "结算时间": now + timedelta(minutes=duration), 
-            "状态": "待结算", "结果": None
+            "资产": coin, "方向": "看涨", "开仓价": current_price, "平仓价": None,
+            "金额": bet, "结算时间": now + timedelta(minutes=duration), "状态": "待结算", "结果": None
         })
+        save_db(st.session_state.balance, st.session_state.orders) # 立即保存
         st.rerun()
 
-if col_down.button("🔴 看跌 (SELL DOWN)"):
-    if current_price and st.session_state.balance >= bet:
+if col_down.button("🔴 看跌 (DOWN)") and current_price:
+    if st.session_state.balance >= bet:
         st.session_state.balance -= bet
-        save_data(st.session_state.balance)
         st.session_state.orders.append({
-            "币种": coin, "方向": "看跌", "图标": "↘️", 
-            "开仓价": current_price, "平仓价": None, 
-            "金额": bet, "结算时间": now + timedelta(minutes=duration), 
-            "状态": "待结算", "结果": None
+            "资产": coin, "方向": "看跌", "开仓价": current_price, "平仓价": None,
+            "金额": bet, "结算时间": now + timedelta(minutes=duration), "状态": "待结算", "结果": None
         })
+        save_db(st.session_state.balance, st.session_state.orders) # 立即保存
         st.rerun()
 
-# --- 动态交易流水 ---
-st.subheader(f"📊 {coin} 实时执行流水")
+# 历史记录展示
+st.subheader("📋 历史记录 (永久保存)")
 if st.session_state.orders:
-    # 只显示当前选中币种的订单，或者全部显示但标明币种
-    display_data = []
+    df_show = []
     for od in reversed(st.session_state.orders[-10:]):
         rem = (od["结算时间"] - now).total_seconds()
-        
-        # 这里的样式模拟了你想要的“箭头”和“虚线感”
-        arrow = f"<span class='up-arrow'>↗️</span>" if od["方向"] == "看涨" else f"<span class='down-arrow'>↘️</span>"
-        
-        display_data.append({
-            "资产": od["币种"],
-            "类型": od["方向"] + (" ↗️" if od["方向"] == "看涨" else " ↘️"),
-            "执行价格(虚线位)": f"{od['开仓价']:.2f}",
-            "当前/平仓价": f"{od['平仓价']:.2f}" if od['平仓价'] else "⚡ 运行中",
-            "投入": f"{od['金额']} U",
-            "结果": od["结果"] if od["结果"] else f"剩余 {int(rem)}s"
+        df_show.append({
+            "资产": od["资产"],
+            "方向": "上涨 ↗️" if od["方向"] == "看涨" else "下跌 ↘️",
+            "开仓基准": f"{od['开仓价']:.2f}",
+            "平仓价格": f"{od['平仓价']:.2f}" if od['平仓价'] else "运行中",
+            "盈亏": od["结果"] if od["结果"] else f"{int(rem)}s"
         })
-    
-    st.table(pd.DataFrame(display_data))
-
-# 底部说明
-st.caption("注：图表虚线标记已在流水中同步实时价位。入场即刻锁定当前报价。")
+    st.table(df_show)
