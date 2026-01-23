@@ -125,27 +125,14 @@ total_pnl = sum([o.get("收益", 0) for o in settled])
 win_rate = (len([o for o in settled if o.get("结果") == "W"]) / len(settled) * 100) if settled else 0
 
 # ==========================================
-# 6. TV 原生 API 注入 (虚线 + K线永久标记)
+# 6. 【指令增强版】针对图表重载优化的渲染逻辑
 # ==========================================
-active_prices = [o['开仓价'] for o in st.session_state.orders if o['状态'] == '待结算' and o['资产'] == coin]
-history_marks = []
-for o in st.session_state.orders:
-    if o.get("状态") == "已结算" and o.get("资产") == coin:
-        history_marks.append({
-            "time": int(o['开仓时间'].timestamp()),
-            "price": o['开仓价'],
-            "label": o['结果'],
-            "color": "#02C076" if o['结果'] == "W" else "#CF304A"
-        })
-
-# ==========================================
-# 6. 【加固版】TV API 注入 - 强制渲染虚线与标记
-# ==========================================
-# 准备数据
+# 准备当前资产的活跃订单数据
 active_orders_js = [
     {"price": o['开仓价'], "color": "#02C076" if o['方向'] == "看涨" else "#CF304A"} 
     for o in st.session_state.orders if o['状态'] == '待结算' and o['资产'] == coin
 ]
+# 准备历史结算数据
 history_marks_js = [
     {"time": int(o['开仓时间'].timestamp()), "price": o['开仓价'], "res": o['结果']}
     for o in st.session_state.orders if o.get("状态") == "已结算" and o.get("资产") == coin
@@ -155,22 +142,30 @@ tv_html = f"""
 <div id="tv_chart_container" style="height:450px;"></div>
 <script src="https://s3.tradingview.com/tv.js"></script>
 <script>
+    // 1. 初始化图表变量
     var tvWidget = new TradingView.widget({{
-        "autosize": true, "symbol": "BINANCE:{coin}", "interval": "1",
-        "theme": "light", "style": "1", "locale": "zh_CN", "container_id": "tv_chart_container",
-        "hide_side_toolbar": false, "allow_symbol_change": false, "save_image": false,
+        "autosize": true,
+        "symbol": "BINANCE:{coin}",
+        "interval": "1",
+        "theme": "light",
+        "style": "1",
+        "locale": "zh_CN",
+        "container_id": "tv_chart_container",
+        "hide_side_toolbar": false,
+        "allow_symbol_change": false,
         "timezone": "Asia/Shanghai"
     }});
 
-    function renderShapes() {{
+    // 2. 定义核心绘图函数
+    function drawEverything() {{
         try {{
             var chart = tvWidget.chart();
-            if (!chart) return; // 还没准备好就退出，等待下一轮重试
+            if (!chart) return;
 
-            // 1. 清理旧形状（防止重叠）
+            // 清除之前的线和形状，避免重复
             chart.removeAllShapes();
 
-            // 2. 渲染待结算虚线
+            // 绘制当前待结算的虚线
             var active = {json.dumps(active_orders_js)};
             active.forEach(function(o) {{
                 chart.createShape({{time: 0, price: o.price}}, {{
@@ -181,12 +176,13 @@ tv_html = f"""
                         linestyle: 2,
                         linewidth: 2,
                         showLabel: true,
-                        textcolor: o.color
+                        textcolor: o.color,
+                        fontsize: 12
                     }}
                 }});
             }});
 
-            // 3. 渲染历史 W/L 箭头
+            // 绘制历史 W/L 箭头和文字
             var marks = {json.dumps(history_marks_js)};
             marks.forEach(function(m) {{
                 var isWin = m.res === "W";
@@ -196,24 +192,26 @@ tv_html = f"""
                     text: isWin ? "WIN (W)" : "LOSS (L)",
                     overrides: {{
                         color: isWin ? "#02C076" : "#CF304A",
-                        fontsize: 12,
-                        fontBold: true,
                         showLabel: true,
+                        fontsize: 14,
+                        fontBold: true,
                         textcolor: isWin ? "#02C076" : "#CF304A"
                     }}
                 }});
             }});
         }} catch(e) {{
-            console.log("Waiting for chart ready...");
+            console.error("Drawing Error:", e);
         }}
     }}
 
-    // 关键：多重触发机制，确保线一定能画出来
+    // 3. 关键：确保图表完全就绪后触发展开
     tvWidget.onChartReady(function() {{
-        setTimeout(renderShapes, 500); // 延迟半秒确保渲染引擎就绪
+        // 给绘图引擎一点点缓冲时间
+        setTimeout(drawEverything, 800);
     }});
 </script>
 """
+components.html(tv_html, height=460)
 
 # ==========================================
 # 7. 主界面渲染 (修正 ValueError 处理)
@@ -276,4 +274,5 @@ if st.session_state.orders:
             "状态/结果": od['结果'] if od['结果'] else f"倒计时 {int(rem)}s"
         })
     st.table(history)
+
 
