@@ -8,16 +8,16 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 import time
 
-# --- 仅在必要时加载绘图库，不影响其他逻辑 ---
+# --- 核心：改进模块检测逻辑 ---
 try:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
     HAS_PLOTLY = True
-except:
+except (ImportError, ModuleNotFoundError):
     HAS_PLOTLY = False
 
 # ==========================================
-# 1. 数据库持久化 (完全保留你的原始逻辑和命名)
+# 1. 数据库持久化 (完全保留你的原始命名与逻辑)
 # ==========================================
 DB_FILE = "trading_db.json"
 st.set_page_config(page_title="Binance Pro Terminal", layout="wide", initial_sidebar_state="collapsed")
@@ -54,7 +54,7 @@ def save_db(balance, orders):
 if 'balance' not in st.session_state:
     st.session_state.balance, st.session_state.orders = load_db()
 
-# --- 手机端优化 CSS (完全保留) ---
+# --- 手机端适配 CSS (你最喜欢的布局) ---
 st.markdown("""
 <style>
     .stApp { background:#FFF; }
@@ -68,25 +68,25 @@ st.markdown("""
 st_autorefresh(interval=5000, key="global_refresh")
 
 # ==========================================
-# 2. 行情获取 (恢复你提供的双保险逻辑，确保直连可用)
+# 2. 行情获取 (恢复你提供的双保险逻辑)
 # ==========================================
 def get_price(symbol):
     headers = {'X-MBX-APIKEY': "OV8COob7B14HYTG100sMaNPTkhSJ01dpqFVZSQa2HdRZRVhxBrwHdOFAIFNuWS8t"}
     try:
-        # 币安接口
+        # 你的第一来源：Binance
         res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", headers=headers, timeout=5).json()
         return float(res['price'])
     except:
         try:
-            # Gate.io 备份逻辑
+            # 你的第二来源：Gate.io
             g_sym = symbol.replace("USDT", "_USDT")
             res = requests.get(f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={g_sym}", timeout=5).json()
             return float(res[0]['last'])
         except: return None
 
-# 获取K线用于原生绘图 (增加超时至5秒提高云端成功率)
-def get_klines_data(symbol):
+def get_klines_direct(symbol):
     try:
+        # 使用直连 API 获取 K 线数据用于原生绘图
         url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1m&limit=60"
         res = requests.get(url, timeout=5).json()
         df = pd.DataFrame(res, columns=['time','open','high','low','close','vol','ct','qa','tr','tb','tq','ig'])
@@ -96,12 +96,11 @@ def get_klines_data(symbol):
     except: return pd.DataFrame()
 
 # ==========================================
-# 3. 界面与参数控制
+# 3. 核心逻辑处理
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 终端控制")
-    # 增加切换开关
-    chart_engine = st.radio("K线引擎", ["TradingView", "原生K线 (直连)"], index=0)
+    chart_choice = st.radio("K线模式", ["TradingView", "原生直连 (含布林+MACD)"], index=0)
     coin = st.selectbox("选择交易对", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=0)
     duration = st.radio("结算周期", [5, 10, 30, 60], format_func=lambda x: f"{x} 分钟", index=0)
     bet = st.number_input("下单金额 (U)", 10.0, 1000.0, 50.0)
@@ -113,7 +112,7 @@ with st.sidebar:
 current_price = get_price(coin)
 now = get_beijing_time()
 
-# 结算逻辑 (恢复完整的平仓价对比逻辑)
+# 结算逻辑 (完全保留你原始的平仓价对比逻辑)
 if current_price:
     updated = False
     for od in st.session_state.orders:
@@ -128,7 +127,7 @@ if current_price:
                 updated = True
     if updated: save_db(st.session_state.balance, st.session_state.orders)
 
-# 数据统计 (恢复完整命名)
+# 数据统计 (保留原始命名)
 settled_orders = [o for o in st.session_state.orders if o.get("状态") == "已结算"]
 today_str = now.strftime('%Y-%m-%d')
 today_orders = [o for o in settled_orders if o.get("开仓时间") and o.get("开仓时间").strftime('%Y-%m-%d') == today_str]
@@ -138,44 +137,44 @@ total_pnl = sum([o.get("收益", 0) for o in settled_orders])
 total_wr = (len([o for o in settled_orders if o.get("结果") == "W"]) / len(settled_orders) * 100) if settled_orders else 0
 
 # ==========================================
-# 4. UI 布局与图表 (整合原生绘图)
+# 4. UI 与 图表布局
 # ==========================================
 c1, c2 = st.columns(2)
 c1.metric("账户余额", f"${st.session_state.balance:,.2f}")
 c2.metric(f"{coin} 实时价", f"${current_price:,.2f}" if current_price else "同步中")
 
-if chart_engine == "TradingView":
+if chart_choice == "TradingView":
     tv_html = f"""<div style="height:380px;"><script src="https://s3.tradingview.com/tv.js"></script>
     <div id="tv-chart" style="height:380px;"></div>
-    <script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"1","theme":"light","style":"1","locale":"zh_CN","container_id":"tv-chart","hide_side_toolbar":false,"allow_symbol_change":false,"studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
+    <script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"1","theme":"light","style":"1","locale":"zh_CN","container_id":"tv-chart","studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
     components.html(tv_html, height=380)
 else:
-    # 原生 K 线绘制逻辑
-    df_k = get_klines_data(coin)
+    # --- 原生 K 线渲染区 ---
+    df_k = get_klines_direct(coin)
     if not df_k.empty and HAS_PLOTLY:
-        # 指标计算 (BB + MACD)
+        # 技术指标计算
         df_k['ma20'] = df_k['close'].rolling(20).mean()
         df_k['std'] = df_k['close'].rolling(20).std()
         df_k['up'], df_k['dn'] = df_k['ma20'] + 2*df_k['std'], df_k['ma20'] - 2*df_k['std']
-        
+        exp1, exp2 = df_k['close'].ewm(span=12).mean(), df_k['close'].ewm(span=26).mean()
+        df_k['macd_v'] = exp1 - exp2
+        df_k['macd_s'] = df_k['macd_v'].ewm(span=9).mean()
+        df_k['macd_h'] = df_k['macd_v'] - df_k['macd_s']
+
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+        # K线 + 布林带
         fig.add_trace(go.Candlestick(x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'], name='K'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='rgba(173,216,230,0.4)'), name='BB_Up'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='rgba(173,216,230,0.4)'), fill='tonexty', name='BB_Dn'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='rgba(173,216,230,0.4)'), name='Up'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='rgba(173,216,230,0.4)'), fill='tonexty', name='Dn'), row=1, col=1)
         # MACD
-        exp1 = df_k['close'].ewm(span=12).mean()
-        exp2 = df_k['close'].ewm(span=26).mean()
-        macd = exp1 - exp2
-        sig = macd.ewm(span=9).mean()
-        hist = macd - sig
-        fig.add_trace(go.Bar(x=df_k['time'], y=hist, name='MACD'), row=2, col=1)
+        fig.add_trace(go.Bar(x=df_k['time'], y=df_k['macd_h'], name='Hist'), row=2, col=1)
         
         fig.update_layout(height=380, margin=dict(l=0,r=0,t=0,b=0), template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
     else:
-        st.warning("原生 K 线数据加载中...请确保 requirements.txt 包含 plotly")
+        st.warning("🔄 原生绘图引擎初始化中... 若长时间显示，请在 Manage App 中点击 Reboot。")
 
-# --- 恢复开仓提示动画 (完全保留你的 status 动画逻辑) ---
+# --- 恢复开仓提示动画 (完全保留你的逻辑) ---
 col_up, col_down = st.columns(2)
 if col_up.button("🟢 看涨 (UP)") and current_price:
     if st.session_state.balance >= bet:
@@ -199,7 +198,7 @@ if col_down.button("🔴 看跌 (DOWN)") and current_price:
         st.toast(f"成功开仓: {coin} 看跌", icon="📉")
         st.rerun()
 
-# --- 统计显示 ---
+# --- 统计显示 (你喜欢的 4 列布局) ---
 st.markdown("---")
 m1, m2, m3, m4 = st.columns(4)
 m1.metric("今日盈亏", f"${today_pnl:.1f}")
@@ -209,7 +208,7 @@ m4.metric("总胜率", f"{int(total_wr)}%")
 st.markdown("---")
 
 # ==========================================
-# 6. 历史记录 (恢复完整的列信息：时间、方向、金额、入场价、平仓价、结果)
+# 6. 历史记录 (恢复完整的 6 列流水记录)
 # ==========================================
 st.subheader("📋 交易流水")
 if st.session_state.orders:
