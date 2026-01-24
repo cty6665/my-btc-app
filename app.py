@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta  # 引入 timedelta 处理时差
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
@@ -13,6 +13,11 @@ from streamlit_autorefresh import st_autorefresh
 DB_FILE = "trading_db.json"
 st.set_page_config(page_title="Binance Pro Terminal", layout="wide", initial_sidebar_state="collapsed")
 
+# 修复核心：定义北京时间转换函数
+def get_beijing_time():
+    # 在服务器 UTC 时间基础上加 8 小时
+    return datetime.utcnow() + timedelta(hours=8)
+
 def load_db():
     if os.path.exists(DB_FILE):
         try:
@@ -21,10 +26,8 @@ def load_db():
                 balance = data.get('balance', 1000.0)
                 orders = data.get('orders', [])
                 for od in orders:
-                    # 确保结算时间被正确解析
                     if isinstance(od.get('结算时间'), str):
                         od['结算时间'] = datetime.strptime(od['结算时间'], '%Y-%m-%d %H:%M:%S')
-                    # 确保开仓时间被正确解析
                     if isinstance(od.get('开仓时间'), str):
                         od['开仓时间'] = datetime.strptime(od['开仓时间'], '%Y-%m-%d %H:%M:%S')
                 return balance, orders
@@ -46,7 +49,6 @@ def save_db(balance, orders):
 if 'balance' not in st.session_state:
     st.session_state.balance, st.session_state.orders = load_db()
 
-# CSS 保持不变
 st.markdown("<style>.stApp{background:#FFF;}.stButton button{background:#FCD535!important;color:#000;font-weight:bold;height:55px;border-radius:10px;}</style>", unsafe_allow_html=True)
 st_autorefresh(interval=5000, key="global_refresh")
 
@@ -79,7 +81,8 @@ with st.sidebar:
         st.rerun()
 
 current_price = get_price(coin)
-now = datetime.now()
+# 修改点：获取当前的北京时间
+now = get_beijing_time()
 
 # 结算逻辑
 if current_price:
@@ -109,7 +112,7 @@ tv_html = f"""<div style="height:380px;"><script src="https://s3.tradingview.com
 <script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"1","theme":"light","style":"1","locale":"zh_CN","container_id":"tv-chart","hide_side_toolbar":false,"allow_symbol_change":false,"studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
 components.html(tv_html, height=380)
 
-# 下单按钮 + 增加 Toast 开仓提示
+# 下单按钮
 col_up, col_down = st.columns(2)
 if col_up.button("🟢 看涨 (UP)") and current_price:
     if st.session_state.balance >= bet:
@@ -133,10 +136,9 @@ if col_down.button("🔴 看跌 (DOWN)") and current_price:
         st.toast(f"✅ 成功下单：{coin} 看跌 ${bet}", icon="📉")
         st.rerun()
 
-# 战报展示
 st.markdown("---")
 # ==========================================
-# 6. 历史记录 (增加开仓时间、投入金额、紧凑排版)
+# 6. 历史记录 (修正时差显示)
 # ==========================================
 st.subheader("📋 交易流水")
 if st.session_state.orders:
@@ -144,13 +146,11 @@ if st.session_state.orders:
     for od in reversed(st.session_state.orders[-10:]):
         rem = (od.get("结算时间", now) - now).total_seconds()
         
-        # 处理开仓时间显示
         ot = od.get("开仓时间")
         ot_str = ot.strftime('%H:%M:%S') if isinstance(ot, datetime) else "-"
         
         df_show.append({
             "时间": ot_str,
-            "资产": od.get("资产"),
             "方向": "涨 ↗️" if od.get("方向") == "看涨" else "跌 ↘️",
             "金额": f"${od.get('金额')}",
             "入场价": f"{od.get('开仓价', 0):,.2f}",
