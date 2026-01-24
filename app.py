@@ -3,9 +3,10 @@ import pandas as pd
 import requests
 import json
 import os
-from datetime import datetime, timedelta  # 引入 timedelta 处理时差
+from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
+import time
 
 # ==========================================
 # 1. 数据库持久化
@@ -13,9 +14,8 @@ from streamlit_autorefresh import st_autorefresh
 DB_FILE = "trading_db.json"
 st.set_page_config(page_title="Binance Pro Terminal", layout="wide", initial_sidebar_state="collapsed")
 
-# 修复核心：定义北京时间转换函数
+# 修正时差：获取北京时间
 def get_beijing_time():
-    # 在服务器 UTC 时间基础上加 8 小时
     return datetime.utcnow() + timedelta(hours=8)
 
 def load_db():
@@ -26,10 +26,9 @@ def load_db():
                 balance = data.get('balance', 1000.0)
                 orders = data.get('orders', [])
                 for od in orders:
-                    if isinstance(od.get('结算时间'), str):
-                        od['结算时间'] = datetime.strptime(od['结算时间'], '%Y-%m-%d %H:%M:%S')
-                    if isinstance(od.get('开仓时间'), str):
-                        od['开仓时间'] = datetime.strptime(od['开仓时间'], '%Y-%m-%d %H:%M:%S')
+                    for key in ['结算时间', '开仓时间']:
+                        if isinstance(od.get(key), str):
+                            od[key] = datetime.strptime(od[key], '%Y-%m-%d %H:%M:%S')
                 return balance, orders
         except: return 1000.0, []
     return 1000.0, []
@@ -38,10 +37,9 @@ def save_db(balance, orders):
     serialized_orders = []
     for od in orders:
         temp = od.copy()
-        if isinstance(temp.get('结算时间'), datetime):
-            temp['结算时间'] = temp['结算时间'].strftime('%Y-%m-%d %H:%M:%S')
-        if isinstance(temp.get('开仓时间'), datetime):
-            temp['开仓时间'] = temp['开仓时间'].strftime('%Y-%m-%d %H:%M:%S')
+        for key in ['结算时间', '开仓时间']:
+            if isinstance(temp.get(key), datetime):
+                temp[key] = temp[key].strftime('%Y-%m-%d %H:%M:%S')
         serialized_orders.append(temp)
     with open(DB_FILE, "w") as f:
         json.dump({"balance": balance, "orders": serialized_orders}, f)
@@ -81,7 +79,6 @@ with st.sidebar:
         st.rerun()
 
 current_price = get_price(coin)
-# 修改点：获取当前的北京时间
 now = get_beijing_time()
 
 # 结算逻辑
@@ -112,33 +109,39 @@ tv_html = f"""<div style="height:380px;"><script src="https://s3.tradingview.com
 <script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"1","theme":"light","style":"1","locale":"zh_CN","container_id":"tv-chart","hide_side_toolbar":false,"allow_symbol_change":false,"studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
 components.html(tv_html, height=380)
 
-# 下单按钮
+# 下单按钮 + 开仓动画 (st.status)
 col_up, col_down = st.columns(2)
 if col_up.button("🟢 看涨 (UP)") and current_price:
     if st.session_state.balance >= bet:
-        st.session_state.balance -= bet
-        st.session_state.orders.append({
-            "资产": coin, "方向": "看涨", "开仓价": current_price, "平仓价": None,
-            "金额": bet, "开仓时间": now, "结算时间": now + timedelta(minutes=duration), "状态": "待结算", "结果": None
-        })
-        save_db(st.session_state.balance, st.session_state.orders)
-        st.toast(f"✅ 成功下单：{coin} 看涨 ${bet}", icon="🚀")
+        with st.status("正在提交订单...", expanded=False) as status:
+            st.session_state.balance -= bet
+            st.session_state.orders.append({
+                "资产": coin, "方向": "看涨", "开仓价": current_price, "平仓价": None,
+                "金额": bet, "开仓时间": now, "结算时间": now + timedelta(minutes=duration), "状态": "待结算", "结果": None
+            })
+            save_db(st.session_state.balance, st.session_state.orders)
+            time.sleep(0.5) # 动画停留
+            status.update(label="✅ 开仓成功!", state="complete")
+        st.toast(f"已下单: {coin} 看涨", icon="📈")
         st.rerun()
 
 if col_down.button("🔴 看跌 (DOWN)") and current_price:
     if st.session_state.balance >= bet:
-        st.session_state.balance -= bet
-        st.session_state.orders.append({
-            "资产": coin, "方向": "看跌", "开仓价": current_price, "平仓价": None,
-            "金额": bet, "开仓时间": now, "结算时间": now + timedelta(minutes=duration), "状态": "待结算", "结果": None
-        })
-        save_db(st.session_state.balance, st.session_state.orders)
-        st.toast(f"✅ 成功下单：{coin} 看跌 ${bet}", icon="📉")
+        with st.status("正在提交订单...", expanded=False) as status:
+            st.session_state.balance -= bet
+            st.session_state.orders.append({
+                "资产": coin, "方向": "看跌", "开仓价": current_price, "平仓价": None,
+                "金额": bet, "开仓时间": now, "结算时间": now + timedelta(minutes=duration), "状态": "待结算", "结果": None
+            })
+            save_db(st.session_state.balance, st.session_state.orders)
+            time.sleep(0.5)
+            status.update(label="✅ 开仓成功!", state="complete")
+        st.toast(f"已下单: {coin} 看跌", icon="📉")
         st.rerun()
 
 st.markdown("---")
 # ==========================================
-# 6. 历史记录 (修正时差显示)
+# 6. 历史记录 (增加：开仓时间、投入金额、平仓价格)
 # ==========================================
 st.subheader("📋 交易流水")
 if st.session_state.orders:
@@ -146,14 +149,16 @@ if st.session_state.orders:
     for od in reversed(st.session_state.orders[-10:]):
         rem = (od.get("结算时间", now) - now).total_seconds()
         
-        ot = od.get("开仓时间")
-        ot_str = ot.strftime('%H:%M:%S') if isinstance(ot, datetime) else "-"
+        # 处理显示逻辑
+        p_close = od.get("平仓价")
+        p_close_display = f"{p_close:,.2f}" if p_close else "运行中..."
         
         df_show.append({
-            "时间": ot_str,
+            "开仓时间": od.get("开仓时间").strftime('%H:%M:%S') if od.get("开仓时间") else "-",
             "方向": "涨 ↗️" if od.get("方向") == "看涨" else "跌 ↘️",
             "金额": f"${od.get('金额')}",
             "入场价": f"{od.get('开仓价', 0):,.2f}",
-            "结果": od.get("结果") if od.get("结果") else f"{int(max(0,rem))}s"
+            "平仓价": p_close_display,
+            "盈亏": od.get("结果") if od.get("结果") else f"{int(max(0,rem))}s"
         })
     st.table(df_show)
