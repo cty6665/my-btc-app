@@ -46,7 +46,35 @@ def save_db(balance, orders):
 if 'balance' not in st.session_state:
     st.session_state.balance, st.session_state.orders = load_db()
 
-st.markdown("<style>.stApp{background:#FFF;}.stButton button{background:#FCD535!important;color:#000;font-weight:bold;height:55px;border-radius:10px;}</style>", unsafe_allow_html=True)
+# --- 【关键修复：针对手机端优化统计数据显示】 ---
+st.markdown("""
+<style>
+    .stApp { background:#FFF; }
+    .stButton button { 
+        background:#FCD535 !important; 
+        color:#000 !important; 
+        font-weight:bold !important;
+        height: 55px !important;
+        border-radius: 10px !important;
+    }
+    /* 核心修复：防止手机端数值变成省略号 */
+    [data-testid="stMetricValue"] {
+        font-size: 1.1rem !important; /* 稍微调小一点字体 */
+        white-space: nowrap !important; /* 强制不换行 */
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.8rem !important; /* 标题调小 */
+        white-space: nowrap !important;
+    }
+    @media (max-width: 640px) {
+        [data-testid="column"] {
+            width: 25% !important; /* 手机端保持4列并排 */
+            min-width: 25% !important;
+        }
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st_autorefresh(interval=5000, key="global_refresh")
 
 # ==========================================
@@ -96,7 +124,7 @@ if current_price:
     if updated: save_db(st.session_state.balance, st.session_state.orders)
 
 # ==========================================
-# 4. 数据统计计算 (新增加)
+# 4. 数据统计计算
 # ==========================================
 settled_orders = [o for o in st.session_state.orders if o.get("状态") == "已结算"]
 today_str = now.strftime('%Y-%m-%d')
@@ -113,13 +141,11 @@ c1, c2 = st.columns(2)
 c1.metric("账户余额", f"${st.session_state.balance:,.2f}")
 c2.metric(f"{coin} 实时价", f"${current_price:,.2f}" if current_price else "同步中")
 
-# 图表
 tv_html = f"""<div style="height:380px;"><script src="https://s3.tradingview.com/tv.js"></script>
 <div id="tv-chart" style="height:380px;"></div>
 <script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"1","theme":"light","style":"1","locale":"zh_CN","container_id":"tv-chart","hide_side_toolbar":false,"allow_symbol_change":false,"studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
 components.html(tv_html, height=380)
 
-# 下单按钮 + 动画反馈
 col_up, col_down = st.columns(2)
 if col_up.button("🟢 看涨 (UP)") and current_price:
     if st.session_state.balance >= bet:
@@ -143,13 +169,13 @@ if col_down.button("🔴 看跌 (DOWN)") and current_price:
         st.toast(f"成功开仓: {coin} 看跌", icon="📉")
         st.rerun()
 
-# --- 【新增加：横向统计行】 ---
+# --- 统计显示（已修复省略号问题） ---
 st.markdown("---")
 m1, m2, m3, m4 = st.columns(4)
-m1.metric("今日盈亏", f"${today_pnl:.2f}")
-m2.metric("今日胜率", f"{today_wr:.1f}%")
-m3.metric("总盈亏", f"${total_pnl:.2f}")
-m4.metric("总胜率", f"{total_wr:.1f}%")
+m1.metric("今日盈亏", f"${today_pnl:.1f}") # 这里改用 .1f 减少一位小数更省空间
+m2.metric("今日胜率", f"{int(today_wr)}%") # 取整数胜率
+m3.metric("总盈亏", f"${total_pnl:.1f}")
+m4.metric("总胜率", f"{int(total_wr)}%")
 st.markdown("---")
 
 # ==========================================
