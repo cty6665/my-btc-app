@@ -124,18 +124,23 @@ total_pnl = sum([o.get("收益", 0) for o in settled_orders])
 total_win_rate = (len([o for o in settled_orders if o.get("结果") == "W"]) / len(settled_orders) * 100) if settled_orders else 0
 
 # ==========================================
-# 5. UI 布局
+# 5. UI 布局 (强制显示数字版)
 # ==========================================
 c1, c2 = st.columns(2)
-c1.metric("可用余额", f"${st.session_state.balance:,.2f}")
-c2.metric(f"{coin} 现价", f"${current_price:,.2f}" if current_price else "📡")
 
-# 图表
+# 1. 余额：保持原样
+c1.metric("可用余额", f"${st.session_state.balance:,.2f}")
+
+# 2. 现价：删掉卫星图标，强制格式化
+# 如果 current_price 暂时没拿到，就显示上一次的价格或 0.00，绝不显示图标
+display_price = current_price if current_price is not None else 0.0
+c2.metric(f"{coin} 现价", f"${display_price:,.2f}")
+
+# 图表部分（保持你的布林、MACD指标预装）
 tv_html = f"""<div style="height:380px;"><script src="https://s3.tradingview.com/tv.js"></script>
 <div id="tv-chart" style="height:380px;"></div>
 <script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"1","theme":"light","style":"1","locale":"zh_CN","container_id":"tv-chart","hide_side_toolbar":false,"allow_symbol_change":false,"studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
 components.html(tv_html, height=380)
-
 # 下单区
 col_up, col_down = st.columns(2)
 if col_up.button("🟢 BUY / 看涨") and current_price:
@@ -170,3 +175,4 @@ if st.session_state.orders:
             "盈亏": f"${od['收益']:+.2f}" if od['状态'] == "已结算" else "⏳"
         })
     st.table(history)
+
