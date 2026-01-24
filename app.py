@@ -176,8 +176,10 @@ def live_ui():
                     updated = True
         if updated: save_db(st.session_state.balance, st.session_state.orders)
 
-    # 2. 【重点优化】顶栏彩色卡片数据展示
+   # 2. 【重点优化】顶栏彩色卡片数据展示
     h1, h2 = st.columns(2)
+    
+    # 余额卡片 (balance 初始有值，直接格式化即可)
     h1.markdown(f"""
         <div class="data-card balance-border">
             <div class="card-label">账户可用余额 (USDT)</div>
@@ -185,10 +187,14 @@ def live_ui():
         </div>
     """, unsafe_allow_html=True)
     
+    # 现价卡片 (修复点：先处理逻辑，再进行格式化)
+    # 我们先定义一个显示的数值，防止 curr_p 为 None 时崩溃
+    display_price = curr_p if curr_p is not None else 0.0
+    
     h2.markdown(f"""
         <div class="data-card">
             <div class="card-label">{coin} 实时现价</div>
-            <div class="card-value">${curr_p:,.2f if curr_p else 0}</div>
+            <div class="card-value">${display_price:,.2f}</div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -263,3 +269,4 @@ else:
         })
     # 这里的 st.table 已经通过 CSS 注入了横向滚动逻辑
     st.table(table_data)
+
