@@ -11,13 +11,13 @@ from streamlit_autorefresh import st_autorefresh
 # --- 1. 环境检测 ---
 try:
     import plotly.graph_objects as go
-    from plotly.subplots import make_subplots # 必须引入子图功能
+    from plotly.subplots import make_subplots
     HAS_PLOTLY = True
 except ImportError:
     HAS_PLOTLY = False
 
 # ==========================================
-# 基础配置 & 深度视觉定制
+# 基础配置 & 深度视觉定制 (原样保留)
 # ==========================================
 st.set_page_config(page_title="Binance Pro Terminal", layout="wide", initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
@@ -25,8 +25,6 @@ DB_FILE = "trading_db.json"
 st.markdown("""
 <style>
     .stApp { background-color: #fcfcfc; }
-    
-    /* 顶栏卡片 */
     .data-card {
         background: #ffffff; padding: 15px; border-radius: 12px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-top: 4px solid #FCD535;
@@ -35,8 +33,6 @@ st.markdown("""
     .balance-border { border-top: 4px solid #0ECB81; }
     .card-label { color: #848e9c; font-size: 0.8rem; }
     .card-value { color: #1e2329; font-size: 1.5rem; font-weight: 800; }
-    
-    /* 按钮与表格适配 */
     .stButton button { 
         background: #FCD535 !important; color: #000 !important; font-weight: bold !important; 
         height: 55px !important; border-radius: 12px !important; border: none !important; 
@@ -45,8 +41,6 @@ st.markdown("""
         .stTable { display: block !important; overflow-x: auto !important; white-space: nowrap !important; }
         .card-value { font-size: 1.3rem !important; }
     }
-
-    /* --- 开仓成功动态对勾动画 --- */
     @keyframes scaleIn { 0% { transform: scale(0); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
     .success-overlay {
         position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -62,7 +56,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 工具函数 (完全保留原逻辑)
+# 工具函数 (原样保留)
 # ==========================================
 def get_beijing_time(): return datetime.utcnow() + timedelta(hours=8)
 
@@ -99,7 +93,6 @@ def get_klines_smart_source(symbol, interval='1m'):
             return df, "Binance"
         except: return pd.DataFrame(), None
 
-# --- 数据库保持 ---
 def load_db():
     if os.path.exists(DB_FILE):
         try:
@@ -151,7 +144,7 @@ def live_ui():
     curr_p = get_price(coin)
     now_time = get_beijing_time()
 
-    # 1. 自动结算
+    # 1. 自动结算 (原逻辑)
     if curr_p:
         upd = False
         for od in st.session_state.orders:
@@ -172,38 +165,37 @@ def live_ui():
     d_p = curr_p if curr_p else 0.0
     h2.markdown(f'<div class="data-card"><div class="card-label">{coin} 实时现价</div><div class="card-value">${d_p:,.2f}</div></div>', unsafe_allow_html=True)
 
-    # 3. K 线展示 (注入 MACD 与 BOLL 加粗)
+    # 3. K 线 (双指缩放/中轨金色/MACD)
     if chart_mode == "TradingView":
         tv_i = "1" if k_interval == "1m" else k_interval.replace("m", "")
-        tv_html = f"""<div style="height:420px;"><div id="tv" style="height:420px;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"{tv_i}","theme":"light","style":"1","locale":"zh_CN","container_id":"tv","studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
-        components.html(tv_html, height=420)
+        tv_html = f"""<div style="height:380px;"><div id="tv" style="height:380px;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"{tv_i}","theme":"light","style":"1","locale":"zh_CN","container_id":"tv","studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
+        components.html(tv_html, height=380)
     else:
         df_k, src = get_klines_smart_source(coin, k_interval)
         if not df_k.empty:
-            # --- 指标计算 (BOLL + MACD) ---
+            # 计算 BOLL
             df_k['ma'] = df_k['close'].rolling(20).mean()
             df_k['std'] = df_k['close'].rolling(20).std()
-            df_k['up'] = df_k['ma'] + 2*df_k['std']
-            df_k['dn'] = df_k['ma'] - 2*df_k['std']
-            
-            exp1 = df_k['close'].ewm(span=12, adjust=False).mean()
-            exp2 = df_k['close'].ewm(span=26, adjust=False).mean()
-            df_k['macd'] = exp1 - exp2
-            df_k['signal'] = df_k['macd'].ewm(span=9, adjust=False).mean()
-            df_k['hist'] = df_k['macd'] - df_k['signal']
+            df_k['up'] = df_k['ma'] + 2*df_k['std']; df_k['dn'] = df_k['ma'] - 2*df_k['std']
+            # 计算 MACD
+            ema12 = df_k['close'].ewm(span=12, adjust=False).mean()
+            ema26 = df_k['close'].ewm(span=26, adjust=False).mean()
+            df_k['macd'] = ema12 - ema26
+            df_k['sig'] = df_k['macd'].ewm(span=9, adjust=False).mean()
+            df_k['hist'] = df_k['macd'] - df_k['sig']
 
-            # 创建带 MACD 的子图
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
             
-            # 主图 (K线 + 加粗变色 BOLL)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='#1f77b4', width=2.5), name='BOLL上', showlegend=False), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='#e377c2', width=2.5), name='BOLL下', showlegend=False), row=1, col=1)
-            fig.add_trace(go.Candlestick(x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'], increasing_fillcolor='#0ECB81', increasing_line_color='#0ECB81', decreasing_fillcolor='#F6465D', decreasing_line_color='#F6465D', name='K线'), row=1, col=1)
+            # 主图
+            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='#1f77b4', width=2), name='上轨(蓝)'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='#e377c2', width=2), name='下轨(粉)'), row=1, col=1)
+            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['ma'], line=dict(color='#FFB11B', width=2), name='中轨(金)'), row=1, col=1) # 中轨金色
+            fig.add_trace(go.Candlestick(x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'], increasing_fillcolor='#0ECB81', increasing_line_color='#0ECB81', decreasing_fillcolor='#F6465D', decreasing_line_color='#F6465D'), row=1, col=1)
             
-            # 副图 (MACD)
-            fig.add_trace(go.Bar(x=df_k['time'], y=df_k['hist'], marker_color='gray', name='力度'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['macd'], line=dict(color='#00F', width=1), name='DIF'), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['signal'], line=dict(color='#F0F', width=1), name='DEA'), row=2, col=1)
+            # 副图 MACD
+            fig.add_trace(go.Bar(x=df_k['time'], y=df_k['hist'], marker_color='gray'), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['macd'], line=dict(color='#2962FF', width=1)), row=2, col=1)
+            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['sig'], line=dict(color='#FF6D00', width=1)), row=2, col=1)
 
             fig.update_layout(
                 height=420, margin=dict(t=5,b=5,l=0,r=0), 
@@ -213,30 +205,34 @@ def live_ui():
                 xaxis=dict(fixedrange=False), yaxis=dict(fixedrange=False),
                 showlegend=False
             )
-            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
+            # 关键：注入 scrollZoom 和移动端支持
+            st.plotly_chart(fig, use_container_width=True, config={
+                'scrollZoom': True, 
+                'displayModeBar': False,
+                'doubleClick': 'reset',
+                'showAxisDragHandles': True
+            })
         else: st.error("K 线同步中...")
 
-    # --- 按钮与流水保持原样 ---
+    # --- 下单区 (原样保留) ---
     st.markdown("<br>", unsafe_allow_html=True)
     b1, b2 = st.columns(2)
     now_s = get_beijing_time()
-    
     if b1.button("🟢 买涨 (UP)", use_container_width=True) and curr_p:
         if st.session_state.balance >= bet:
             st.session_state.balance -= bet
             st.session_state.orders.append({"资产": coin, "方向": "看涨", "开仓价": curr_p, "平仓价": None, "金额": bet, "开仓时间": now_s, "结算时间": now_s+timedelta(minutes=duration), "状态": "待结算", "结果": None})
             save_db(st.session_state.balance, st.session_state.orders)
-            st.session_state.show_success = True
-            st.rerun()
+            st.session_state.show_success = True; st.rerun()
 
     if b2.button("🔴 买跌 (DOWN)", use_container_width=True) and curr_p:
         if st.session_state.balance >= bet:
             st.session_state.balance -= bet
             st.session_state.orders.append({"资产": coin, "方向": "看跌", "开仓价": curr_p, "平仓价": None, "金额": bet, "开仓时间": now_s, "结算时间": now_s+timedelta(minutes=duration), "状态": "待结算", "结果": None})
             save_db(st.session_state.balance, st.session_state.orders)
-            st.session_state.show_success = True
-            st.rerun()
+            st.session_state.show_success = True; st.rerun()
 
+    # 流水
     st.markdown("---")
     st.subheader("📋 实时流水")
     if not st.session_state.orders:
@@ -252,18 +248,10 @@ def live_ui():
             })
         st.table(t_d)
 
-# 成功动画展示逻辑保持
+# 成功动画 (原样保留)
 if 'show_success' not in st.session_state: st.session_state.show_success = False
 if st.session_state.show_success:
-    st.markdown("""
-        <div class="success-overlay">
-            <svg class="checkmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52">
-                <circle class="checkmark__circle" cx="26" cy="26" r="25" fill="none"/>
-                <path class="checkmark__check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
-            </svg>
-            <h2 style="color: #0ECB81; margin-top: 20px;">开仓成功</h2>
-        </div>
-    """, unsafe_allow_html=True)
+    st.markdown('<div class="success-overlay"><svg class="checkmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52"><circle class="checkmark__circle" cx="26" cy="26" r="25" fill="none"/><path class="checkmark__check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/></svg><h2 style="color: #0ECB81; margin-top: 20px;">开仓成功</h2></div>', unsafe_allow_html=True)
     time.sleep(1.2); st.session_state.show_success = False; st.rerun()
 
 live_ui()
