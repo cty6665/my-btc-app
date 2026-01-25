@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. 样式与配置
+# 1. 样式与配置 (确保动画为动态 CSS)
 # ==========================================
 st.set_page_config(page_title="Binance Pro", layout="wide", initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
@@ -19,7 +19,6 @@ st.markdown("""
     .stApp { background-color: #fcfcfc; }
     [data-testid="collapsedControl"] { display: none; }
     
-    /* 数据卡片 */
     .data-card {
         background: #ffffff; padding: 12px; border-radius: 12px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.05); border-top: 4px solid #FCD535;
@@ -29,7 +28,6 @@ st.markdown("""
     .card-label { color: #848e9c; font-size: 0.8rem; }
     .card-value { color: #1e2329; font-size: 1.4rem; font-weight: 800; }
 
-    /* 统计看板 */
     .stats-container {
         display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
         background: #f8f9fa; padding: 15px; border-radius: 10px; margin-bottom: 15px;
@@ -39,7 +37,6 @@ st.markdown("""
     .stat-label { font-size: 0.75rem; color: #848e9c; }
     .stat-val { font-size: 1rem; font-weight: bold; margin-top: 4px; }
 
-    /* 订单卡片进度填充 */
     .order-card-container {
         position: relative; background: white; border-radius: 10px;
         margin-bottom: 12px; border: 1px solid #eee; overflow: hidden;
@@ -50,13 +47,24 @@ st.markdown("""
     .grid-label { color: #848e9c; font-size: 0.7rem; }
     .grid-val { color: #1e2329; font-size: 0.85rem; font-weight: 600; margin-top: 2px; }
 
-    /* 下单成功动画 */
+    /* 下单成功动态动画 */
     .success-overlay {
         position: fixed; top: 0; left: 0; width: 100%; height: 100%;
         background: rgba(255,255,255,0.9); z-index: 9999;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
     }
-    .checkmark-circle { width: 80px; height: 80px; border-radius: 50%; border: 4px solid #0ECB81; display: flex; align-items: center; justify-content: center; }
+    .checkmark-circle {
+        width: 100px; height: 100px; border-radius: 50%; border: 5px solid #0ECB81;
+        position: relative; animation: scale .3s ease-in-out;
+    }
+    .checkmark {
+        display: block; width: 50px; height: 25px; border-bottom: 5px solid #0ECB81;
+        border-left: 5px solid #0ECB81; transform: rotate(-45deg);
+        position: absolute; top: 30px; left: 25px;
+        animation: checkmark-anim 0.4s ease-in-out;
+    }
+    @keyframes checkmark-anim { 0% { width: 0; height: 0; } 100% { width: 50px; height: 25px; } }
+    @keyframes scale { 0% { transform: scale(0); } 100% { transform: scale(1); } }
     
     .stButton button { border-radius: 12px !important; font-weight: bold !important; height: 45px !important; }
     .reset-btn button { background-color: transparent !important; color: #ccc !important; border: 1px solid #eee !important; font-size: 0.7rem !important; height: 30px !important; margin-top: 50px; }
@@ -133,7 +141,7 @@ if 'dur' not in st.session_state: st.session_state.dur = 5
 if 'show_success' not in st.session_state: st.session_state.show_success = False
 
 # ==========================================
-# 3. 页面组件 (Fragment 化)
+# 3. 局部刷新组件
 # ==========================================
 
 @st.fragment
@@ -142,7 +150,6 @@ def chart_fragment():
     now = get_beijing_time()
     curr_p = get_price(st.session_state.coin)
     
-    # 顶部状态
     c1, c2 = st.columns(2)
     c1.markdown(f'<div class="data-card balance-border"><div class="card-label">可用余额</div><div class="card-value">${st.session_state.balance:,.2f}</div></div>', unsafe_allow_html=True)
     c2.markdown(f'<div class="data-card"><div class="card-label">{st.session_state.coin} 现价</div><div class="card-value">${(curr_p if curr_p else 0):,.2f}</div></div>', unsafe_allow_html=True)
@@ -156,7 +163,6 @@ def chart_fragment():
         from plotly.subplots import make_subplots
         df_k = get_klines_smart_source(st.session_state.coin, st.session_state.interval)
         if not df_k.empty:
-            # 指标计算
             df_k['ma'] = df_k['close'].rolling(20).mean()
             df_k['std'] = df_k['close'].rolling(20).std()
             df_k['up'] = df_k['ma'] + 2*df_k['std']; df_k['dn'] = df_k['ma'] - 2*df_k['std']
@@ -166,30 +172,24 @@ def chart_fragment():
             df_k['hist'] = df_k['dif'] - df_k['dea']
 
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-            # 主图
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1)), row=1, col=1)
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1), fill='tonexty', fillcolor='rgba(41, 98, 255, 0.03)') , row=1, col=1)
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['ma'], line=dict(color='#FFB11B', width=1)), row=1, col=1)
             fig.add_trace(go.Candlestick(x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'], increasing_fillcolor='#0ECB81', decreasing_fillcolor='#F6465D'), row=1, col=1)
             
-            # 【新增功能：开仓虚线与倒计时】
             for o in st.session_state.orders:
                 if o['状态'] == "待结算" and o['资产'] == st.session_state.coin:
                     color = "#0ECB81" if o['方向'] == "看涨" else "#F6465D"
                     rem_sec = int((o['结算时间'] - now).total_seconds())
                     if rem_sec > 0:
-                        # 虚线
                         fig.add_hline(y=o['开仓价'], line_dash="dash", line_color=color, line_width=1, row=1, col=1)
-                        # 倒计时标注 (极小字体)
-                        fig.add_annotation(x=df_k['time'].iloc[-5], y=o['开仓价'], text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s", 
+                        fig.add_annotation(x=df_k['time'].iloc[-3], y=o['开仓价'], text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s", 
                                            showarrow=False, font=dict(size=9, color=color), bgcolor="white", opacity=0.8, row=1, col=1)
 
-            # MACD
             colors = ['#0ECB81' if v >= 0 else '#F6465D' for v in df_k['hist']]
             fig.add_trace(go.Bar(x=df_k['time'], y=df_k['hist'], marker_color=colors), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dif'], line=dict(color='#2962FF', width=1)), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dea'], line=dict(color='#FF6D00', width=1)), row=2, col=1)
-
             fig.update_layout(height=450, margin=dict(t=10,b=10,l=0,r=0), xaxis_rangeslider_visible=False, plot_bgcolor='white', showlegend=False, uirevision=st.session_state.coin)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
@@ -198,17 +198,15 @@ def order_flow_fragment():
     st_autorefresh(interval=1000, key="flow_refresh")
     now = get_beijing_time()
     
-    # 统计数据计算
+    # 统计逻辑
     all_settled = [o for o in st.session_state.orders if o['状态']=="已结算"]
     today_settled = [o for o in all_settled if o['结算时间'].date() == now.date()]
-    
     total_p = sum([(o['金额']*0.8 if o['结果']=="W" else -o['金额']) for o in all_settled])
     total_win_rate = (len([o for o in all_settled if o['结果']=="W"]) / len(all_settled) * 100) if all_settled else 0
     today_p = sum([(o['金额']*0.8 if o['结果']=="W" else -o['金额']) for o in today_settled])
     today_win_rate = (len([o for o in today_settled if o['结果']=="W"]) / len(today_settled) * 100) if today_settled else 0
 
     st.markdown("---")
-    # 【新增功能：统计面板】
     st.markdown(f"""
     <div class="stats-container">
         <div class="stat-item"><div class="stat-label">今日盈亏</div><div class="stat-val" style="color:{'#0ecb81' if today_p>=0 else '#f6465d'}">{today_p:+.2f}</div></div>
@@ -218,7 +216,6 @@ def order_flow_fragment():
     </div>
     """, unsafe_allow_html=True)
 
-    # 自动化结算
     upd = False
     for od in st.session_state.orders:
         if od['状态'] == "待结算" and now >= od['结算时间']:
@@ -231,7 +228,7 @@ def order_flow_fragment():
                 upd = True
     if upd: save_db(st.session_state.balance, st.session_state.orders)
 
-    # 流水卡片
+    # 渲染流水
     for o in reversed(st.session_state.orders[-10:]):
         if o['状态'] == "待结算":
             total_sec = (o['结算时间'] - o['开仓时间']).total_seconds()
@@ -239,13 +236,12 @@ def order_flow_fragment():
             pct = min(100, max(0, int((past_sec / total_sec) * 100)))
             bg = f"background: linear-gradient(90deg, rgba(252, 213, 53, 0.12) {pct}%, white {pct}%);"
             res_txt = f"正在结算 {100-pct}%"
-            p_color = "#222"; p_val = "0.00"
+            p_color = "#222"; p_val = "0.00"; close_price_display = "---"
         else:
-            win = o.get('结果')=="W"
-            bg = f"background: {'rgba(14, 203, 129, 0.08)' if win else 'rgba(246, 70, 93, 0.08)'};"
-            res_txt = "已平仓"
-            p_val = f"{o['金额']*0.8 if win else -o['金额']:+.2f}"
-            p_color = "#0ecb81" if win else "#f6465d"
+            win = o.get('结果')=="W"; bg = f"background: {'rgba(14, 203, 129, 0.08)' if win else 'rgba(246, 70, 93, 0.08)'};"
+            res_txt = "已平仓"; p_val = f"{o['金额']*0.8 if win else -o['金额']:+.2f}"; p_color = "#0ecb81" if win else "#f6465d"
+            # 修复点：平仓价格显示
+            close_price_display = f"{o['平仓价']:,.2f}" if o['平仓价'] else "---"
 
         card_html = f"""
         <div class="order-card-container" style="{bg}">
@@ -257,7 +253,7 @@ def order_flow_fragment():
                 <div class="order-grid">
                     <div class="grid-item"><span class="grid-label">金额</span><span class="grid-val">${o['金额']}</span></div>
                     <div class="grid-item"><span class="grid-label">开仓价</span><span class="grid-val">{o['开仓价']:,.2f}</span></div>
-                    <div class="grid-item"><span class="grid-label">结算时间</span><span class="grid-val">{o['结算时间'].strftime('%H:%M:%S')}</span></div>
+                    <div class="grid-item"><span class="grid-label">平仓价</span><span class="grid-val">{close_price_display}</span></div>
                 </div>
             </div>
         </div>
@@ -268,18 +264,17 @@ def order_flow_fragment():
 # 4. 主程序
 # ==========================================
 if st.session_state.show_success:
-    st.markdown('<div class="success-overlay"><div class="checkmark-circle">✅</div><h2 style="color:#0ECB81; margin-top:15px;">下单成功</h2></div>', unsafe_allow_html=True)
-    time.sleep(1); st.session_state.show_success = False; st.rerun()
+    st.markdown('<div class="success-overlay"><div class="checkmark-circle"><div class="checkmark"></div></div><h2 style="color:#0ECB81; margin-top:20px;">下单成功</h2></div>', unsafe_allow_html=True)
+    time.sleep(1.2); st.session_state.show_success = False; st.rerun()
 
-# 控制区 (非 Fragment，保证切换生效)
 t1, t2, t3 = st.columns(3)
 new_mode = t1.selectbox("图表源", ["原生 K 线", "TradingView"], index=0 if st.session_state.mode=="原生 K 线" else 1)
 if new_mode != st.session_state.mode: st.session_state.mode = new_mode; st.rerun()
 
 st.session_state.coin = t2.selectbox("交易币对", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"], index=0)
-st.session_state.dur = t3.selectbox("结算周期", [1, 2, 5, 10, 30], format_func=lambda x: f"{x} 分钟")
+# 修复点：结算周期回归
+st.session_state.dur = t3.selectbox("结算周期", [5, 10, 30, 60], format_func=lambda x: f"{x} 分钟")
 
-# 周期按钮
 ints = ["1m", "3m", "5m", "15m", "30m", "1h"]
 cols = st.columns(len(ints))
 for i, n in enumerate(ints):
@@ -288,14 +283,13 @@ for i, n in enumerate(ints):
 
 chart_fragment()
 
-# 操作区
 st.markdown("<br>", unsafe_allow_html=True)
 o1, o2 = st.columns(2)
 def buy(dir):
     p = get_price(st.session_state.coin)
     if st.session_state.balance >= st.session_state.bet and p:
         st.session_state.balance -= st.session_state.bet
-        st.session_state.orders.append({"资产": st.session_state.coin, "方向": dir, "开仓价": p, "金额": st.session_state.bet, "开仓时间": get_beijing_time(), "结算时间": get_beijing_time() + timedelta(minutes=st.session_state.dur), "状态": "待结算"})
+        st.session_state.orders.append({"资产": st.session_state.coin, "方向": dir, "开仓价": p, "金额": st.session_state.bet, "开仓时间": get_beijing_time(), "结算时间": get_beijing_time() + timedelta(minutes=st.session_state.dur), "状态": "待结算", "平仓价": None})
         save_db(st.session_state.balance, st.session_state.orders); st.session_state.show_success = True; st.rerun()
 
 if o1.button("🟢 买涨 (UP)", use_container_width=True): buy("看涨")
@@ -308,11 +302,7 @@ if a3.button("➕"): st.session_state.bet += 10.0; st.rerun()
 
 order_flow_fragment()
 
-# 【新增功能：重置账户】
 st.markdown('<div class="reset-btn">', unsafe_allow_html=True)
-if st.button("重置账户与记录 (Reset All Data)"):
-    st.session_state.balance = 1000.0
-    st.session_state.orders = []
-    save_db(1000.0, [])
-    st.rerun()
+if st.button("重置账户与记录"):
+    st.session_state.balance = 1000.0; st.session_state.orders = []; save_db(1000.0, []); st.rerun()
 st.markdown('</div>', unsafe_allow_html=True)
