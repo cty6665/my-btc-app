@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. 样式与配置 (核心对齐修复)
+# 1. 样式与配置 (确保对齐)
 # ==========================================
 st.set_page_config(page_title="Binance Pro", layout="wide", initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
@@ -19,9 +19,8 @@ st.markdown("""
     .stApp { background-color: #fcfcfc; }
     [data-testid="collapsedControl"] { display: none; }
     
-    /* 强制金额控制区对齐 */
-    div[data-testid="column"] { display: flex; align-items: center; justify-content: center; }
-    .stNumberInput { width: 100% !important; }
+    /* 强制金额控制区垂直对齐 */
+    [data-testid="stHorizontalBlock"] { align-items: center !important; }
     
     .data-card {
         background: #ffffff; padding: 12px; border-radius: 12px;
@@ -74,7 +73,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 基础逻辑
+# 2. 核心逻辑
 # ==========================================
 def get_beijing_time(): return datetime.utcnow() + timedelta(hours=8)
 
@@ -127,7 +126,7 @@ if 'dur' not in st.session_state: st.session_state.dur = 5
 if 'show_success' not in st.session_state: st.session_state.show_success = False
 
 # ==========================================
-# 3. 局部刷新组件 (修正图表消失问题)
+# 3. 局部刷新组件
 # ==========================================
 
 @st.fragment
@@ -165,11 +164,11 @@ def chart_fragment():
             
             for o in st.session_state.orders:
                 if o['状态'] == "待结算" and o['资产'] == st.session_state.coin:
-                    color = "#0ECB81" if o['direction'] == "看涨" else "#F6465D"
+                    color = "#0ECB81" if o['方向'] == "看涨" else "#F6465D"
                     rem_sec = int((o['结算时间'] - now).total_seconds())
                     if rem_sec > 0:
                         fig.add_hline(y=o['开仓价'], line_dash="dash", line_color=color, line_width=1, row=1, col=1)
-                        fig.add_annotation(x=df_k['time'].iloc[-3], y=o['开仓价'], text=f"{'↑' if o['direction']=='看涨' else '↓'} {rem_sec}s", 
+                        fig.add_annotation(x=df_k['time'].iloc[-3], y=o['开仓价'], text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s", 
                                            showarrow=False, font=dict(size=9, color=color), bgcolor="white", opacity=0.8, row=1, col=1)
 
             colors = ['#0ECB81' if v >= 0 else '#F6465D' for v in df_k['hist']]
@@ -207,7 +206,7 @@ def order_flow_fragment():
             p_final = get_price(od['资产'])
             if p_final:
                 od['平仓价'] = p_final
-                win = (od['direction']=="看涨" and od['平仓价']>od['开仓价']) or (od['direction']=="看跌" and od['平仓价']<od['开仓价'])
+                win = (od['方向']=="看涨" and od['平仓价']>od['开仓价']) or (od['方向']=="看跌" and od['平仓价']<od['开仓价'])
                 st.session_state.balance += (od['金额'] * 1.8) if win else 0
                 od['状态'], od['结果'] = "已结算", "W" if win else "L"
                 upd = True
@@ -230,7 +229,7 @@ def order_flow_fragment():
         <div class="order-card-container" style="{bg}">
             <div class="order-progress-bg">
                 <div class="order-header">
-                    <div class="symbol-info"><span style="color:{'#0ecb81' if o['direction']=='看涨' else '#f6465d'}">{'↗' if o['direction']=='看涨' else '↘'} {o['资产']}</span><span style="font-size:0.7rem; color:#848e9c; margin-left:10px;">{res_txt}</span></div>
+                    <div class="symbol-info"><span style="color:{'#0ecb81' if o['方向']=='看涨' else '#f6465d'}">{'↗' if o['方向']=='看涨' else '↘'} {o['资产']}</span><span style="font-size:0.7rem; color:#848e9c; margin-left:10px;">{res_txt}</span></div>
                     <div style="font-weight:800; color:{p_color}">{p_val} USDT</div>
                 </div>
                 <div class="order-grid">
@@ -244,14 +243,14 @@ def order_flow_fragment():
         st.markdown(card_html, unsafe_allow_html=True)
 
 # ==========================================
-# 4. 主程序
+# 4. 主程序运行
 # ==========================================
 if st.session_state.show_success:
     st.markdown('<div class="success-overlay"><div class="checkmark-circle"><div class="checkmark"></div></div><h2 style="color:#0ECB81; margin-top:20px;">下单成功</h2></div>', unsafe_allow_html=True)
     time.sleep(1.2); st.session_state.show_success = False; st.rerun()
 
+# 核心选择区
 t1, t2, t3 = st.columns(3)
-# 修复：使用 key 且不触发输入模式
 st.session_state.mode = t1.selectbox("图表源", ["原生 K 线", "TradingView"], index=0 if st.session_state.mode=="原生 K 线" else 1, key="mode_sel")
 st.session_state.coin = t2.selectbox("交易币对", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"], index=0, key="coin_sel")
 st.session_state.dur = t3.selectbox("结算周期", [5, 10, 30, 60], format_func=lambda x: f"{x} 分钟", key="dur_sel")
@@ -270,24 +269,32 @@ def buy(dir_name):
     p = get_price(st.session_state.coin)
     if st.session_state.balance >= st.session_state.bet and p:
         st.session_state.balance -= st.session_state.bet
-        st.session_state.orders.append({"资产": st.session_state.coin, "direction": dir_name, "开仓价": p, "金额": st.session_state.bet, "开仓时间": get_beijing_time(), "结算时间": get_beijing_time() + timedelta(minutes=st.session_state.dur), "状态": "待结算", "平仓价": None})
+        st.session_state.orders.append({
+            "资产": st.session_state.coin, 
+            "方向": dir_name, 
+            "开仓价": p, 
+            "金额": st.session_state.bet, 
+            "开仓时间": get_beijing_time(), 
+            "结算时间": get_beijing_time() + timedelta(minutes=st.session_state.dur), 
+            "状态": "待结算", 
+            "平仓价": None
+        })
         save_db(st.session_state.balance, st.session_state.orders); st.session_state.show_success = True; st.rerun()
 
 if o1.button("🟢 买涨 (UP)", use_container_width=True): buy("看涨")
 if o2.button("🔴 买跌 (DOWN)", use_container_width=True): buy("看跌")
 
-# 加减号对齐与响应加速
+# 金额加减对齐修复
 a1, a2, a3 = st.columns([1, 2, 1])
 if a1.button("➖", use_container_width=True):
     st.session_state.bet = max(10.0, st.session_state.bet - 10.0); st.rerun()
-# a2 中间使用非交互显示或锁定 key
 st.session_state.bet = a2.number_input("AMT", value=float(st.session_state.bet), step=10.0, label_visibility="collapsed", key="bet_input_val")
 if a3.button("➕", use_container_width=True):
     st.session_state.bet += 10.0; st.rerun()
 
 order_flow_fragment()
 
-# 隐蔽的重置功能 (放在最底部)
+# 隐蔽重置
 st.markdown("<br><br><br><br><br>", unsafe_allow_html=True)
 with st.expander("🛠️ 系统管理"):
     pwd = st.text_input("输入授权码清空数据", type="password")
