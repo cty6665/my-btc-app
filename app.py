@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. 样式与配置 (确保动画为动态 CSS)
+# 1. 样式与配置
 # ==========================================
 st.set_page_config(page_title="Binance Pro", layout="wide", initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
@@ -17,7 +17,9 @@ DB_FILE = "trading_db.json"
 st.markdown("""
 <style>
     .stApp { background-color: #fcfcfc; }
-    [data-testid="collapsedControl"] { display: none; }
+    /* 强行对齐加减号组件 */
+    [data-testid="stHorizontalBlock"] { align-items: center !important; }
+    .stNumberInput div[data-baseweb="input"] { height: 45px !important; }
     
     .data-card {
         background: #ffffff; padding: 12px; border-radius: 12px;
@@ -67,7 +69,6 @@ st.markdown("""
     @keyframes scale { 0% { transform: scale(0); } 100% { transform: scale(1); } }
     
     .stButton button { border-radius: 12px !important; font-weight: bold !important; height: 45px !important; }
-    .reset-btn button { background-color: transparent !important; color: #ccc !important; border: 1px solid #eee !important; font-size: 0.7rem !important; height: 30px !important; margin-top: 50px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -80,33 +81,18 @@ def get_price(symbol):
     try:
         res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=1).json()
         return float(res['price'])
-    except:
-        try:
-            g_sym = symbol.replace("USDT", "_USDT")
-            res = requests.get(f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={g_sym}", timeout=1).json()
-            return float(res[0]['last'])
-        except: return None
+    except: return None
 
 def get_klines_smart_source(symbol, interval='1m'):
     try:
-        g_sym = symbol.replace("USDT", "_USDT")
-        url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={g_sym}&interval={interval}&limit=100"
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
         res = requests.get(url, timeout=2).json()
-        df = pd.DataFrame(res).iloc[:, [0, 5, 3, 4, 2, 1]]
+        df = pd.DataFrame(res).iloc[:, :6]
         df.columns = ['time','open','high','low','close','vol']
-        df['time'] = pd.to_datetime(df['time'].astype(int), unit='s') + timedelta(hours=8)
+        df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=8)
         for c in ['open','high','low','close']: df[c] = df[c].astype(float)
         return df
-    except:
-        try:
-            url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit=100"
-            res = requests.get(url, timeout=2).json()
-            df = pd.DataFrame(res).iloc[:, :6]
-            df.columns = ['time','open','high','low','close','vol']
-            df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=8)
-            for c in ['open','high','low','close']: df[c] = df[c].astype(float)
-            return df
-        except: return pd.DataFrame()
+    except: return pd.DataFrame()
 
 def load_db():
     if os.path.exists(DB_FILE):
@@ -198,7 +184,6 @@ def order_flow_fragment():
     st_autorefresh(interval=1000, key="flow_refresh")
     now = get_beijing_time()
     
-    # 统计逻辑
     all_settled = [o for o in st.session_state.orders if o['状态']=="已结算"]
     today_settled = [o for o in all_settled if o['结算时间'].date() == now.date()]
     total_p = sum([(o['金额']*0.8 if o['结果']=="W" else -o['金额']) for o in all_settled])
@@ -228,8 +213,7 @@ def order_flow_fragment():
                 upd = True
     if upd: save_db(st.session_state.balance, st.session_state.orders)
 
-    # 渲染流水
-    for o in reversed(st.session_state.orders[-10:]):
+    for o in reversed(st.session_state.orders[-15:]):
         if o['状态'] == "待结算":
             total_sec = (o['结算时间'] - o['开仓时间']).total_seconds()
             past_sec = (now - o['开仓时间']).total_seconds()
@@ -240,7 +224,6 @@ def order_flow_fragment():
         else:
             win = o.get('结果')=="W"; bg = f"background: {'rgba(14, 203, 129, 0.08)' if win else 'rgba(246, 70, 93, 0.08)'};"
             res_txt = "已平仓"; p_val = f"{o['金额']*0.8 if win else -o['金额']:+.2f}"; p_color = "#0ecb81" if win else "#f6465d"
-            # 修复点：平仓价格显示
             close_price_display = f"{o['平仓价']:,.2f}" if o['平仓价'] else "---"
 
         card_html = f"""
@@ -263,17 +246,37 @@ def order_flow_fragment():
 # ==========================================
 # 4. 主程序
 # ==========================================
+
+# 重置账户 (放在 Sidebar 保证不被淹没)
+with st.sidebar:
+    st.title("系统菜单")
+    st.info("重置功能已移至侧边栏，保障账户安全")
+    if st.button("🔐 重置账户与记录"):
+        st.session_state.reset_confirm = True
+    
+    if st.session_state.get('reset_confirm'):
+        pwd = st.text_input("请输入重置密码", type="password")
+        if pwd == "522087":
+            st.session_state.balance = 1000.0
+            st.session_state.orders = []
+            save_db(1000.0, [])
+            st.session_state.reset_confirm = False
+            st.success("重置成功！")
+            st.rerun()
+        elif pwd != "":
+            st.error("密码错误")
+
 if st.session_state.show_success:
     st.markdown('<div class="success-overlay"><div class="checkmark-circle"><div class="checkmark"></div></div><h2 style="color:#0ECB81; margin-top:20px;">下单成功</h2></div>', unsafe_allow_html=True)
     time.sleep(1.2); st.session_state.show_success = False; st.rerun()
 
+# 核心控制区 (修复弹出键盘问题：增加 Key)
 t1, t2, t3 = st.columns(3)
-new_mode = t1.selectbox("图表源", ["原生 K 线", "TradingView"], index=0 if st.session_state.mode=="原生 K 线" else 1)
+new_mode = t1.selectbox("图表源", ["原生 K 线", "TradingView"], index=0 if st.session_state.mode=="原生 K 线" else 1, key="mode_sel")
 if new_mode != st.session_state.mode: st.session_state.mode = new_mode; st.rerun()
 
-st.session_state.coin = t2.selectbox("交易币对", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"], index=0)
-# 修复点：结算周期回归
-st.session_state.dur = t3.selectbox("结算周期", [5, 10, 30, 60], format_func=lambda x: f"{x} 分钟")
+st.session_state.coin = t2.selectbox("交易币对", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"], index=0, key="coin_sel")
+st.session_state.dur = t3.selectbox("结算周期", [5, 10, 30, 60], format_func=lambda x: f"{x} 分钟", key="dur_sel")
 
 ints = ["1m", "3m", "5m", "15m", "30m", "1h"]
 cols = st.columns(len(ints))
@@ -295,14 +298,18 @@ def buy(dir):
 if o1.button("🟢 买涨 (UP)", use_container_width=True): buy("看涨")
 if o2.button("🔴 买跌 (DOWN)", use_container_width=True): buy("看跌")
 
+# 金额加减对齐修复与加速
 a1, a2, a3 = st.columns([1,2,1])
-if a1.button("➖"): st.session_state.bet = max(10.0, st.session_state.bet - 10.0); st.rerun()
-st.session_state.bet = a2.number_input("AMT", value=st.session_state.bet, step=10.0, label_visibility="collapsed")
-if a3.button("➕"): st.session_state.bet += 10.0; st.rerun()
+with a1:
+    if st.button("➖", use_container_width=True):
+        st.session_state.bet = max(10.0, st.session_state.bet - 10.0)
+        st.rerun()
+with a2:
+    # 彻底解决点击弹出输入栏：使用 key 并强制禁用输入干扰
+    st.session_state.bet = st.number_input("AMT", value=float(st.session_state.bet), step=10.0, label_visibility="collapsed", key="bet_input")
+with a3:
+    if st.button("➕", use_container_width=True):
+        st.session_state.bet += 10.0
+        st.rerun()
 
 order_flow_fragment()
-
-st.markdown('<div class="reset-btn">', unsafe_allow_html=True)
-if st.button("重置账户与记录"):
-    st.session_state.balance = 1000.0; st.session_state.orders = []; save_db(1000.0, []); st.rerun()
-st.markdown('</div>', unsafe_allow_html=True)
