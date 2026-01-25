@@ -7,76 +7,62 @@ import time
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
-
-# --- 核心修复：确保 Plotly 组件被明确导入 ---
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots 
+from plotly.subplots import make_subplots
 
-# 如果你的环境中可能缺失 plotly，建议在本地环境先运行: pip install plotly
-# --- 1. 核心配置 ---
+# --- 1. 核心配置与样式 ---
 st.set_page_config(page_title="事件合约", layout="wide", initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
 
-# --- 2. 深度视觉定制 (缝合 375px 移动端风格) ---
 st.markdown("""
 <style>
-    /* 全局背景与导航栏 */
     .stApp { background-color: #FFFFFF; }
     [data-testid="stHeader"] { display: none; }
     
+    /* 1. 导航栏 */
     .nav-bar {
         position: fixed; top: 0; left: 0; width: 100%; height: 44px;
         background: #FFFFFF; border-bottom: 1px solid #E5E5EA;
-        display: flex; align-items: center; justify-content: center; z-index: 999;
+        display: flex; align-items: center; justify-content: center; z-index: 1000;
     }
     .nav-title { font-size: 18px; font-weight: 700; color: #000000; }
 
-    /* 交易对与赔率区 */
-    .symbol-container { margin-top: 50px; padding: 10px 16px; display: flex; justify-content: space-between; align-items: center; }
-    .symbol-name { font-size: 24px; font-weight: 700; color: #000000; }
-    .odds-green { color: #00B578; font-size: 16px; font-weight: 600; }
-    .odds-red { color: #FF3141; font-size: 16px; font-weight: 600; }
-
-    /* 图表控制栏 */
-    .chart-ctrl-bar { background: #F5F5F7; padding: 4px 16px; display: flex; justify-content: space-between; align-items: center; }
-    .index-label { font-size: 12px; color: #8E8E93; }
-
-    /* 模拟输入框样式美化原生组件 */
-    div[data-testid="stNumberInput"] label { font-size: 16px !important; color: #000000 !important; font-weight: 400 !important; }
-    div[data-testid="stNumberInput"] input { border: none !important; text-align: right !important; font-weight: 700 !important; font-size: 16px !important; }
-    
-    /* 核心大按钮 */
-    .stButton button { 
-        height: 50px !important; border-radius: 8px !important; font-size: 18px !important; font-weight: 700 !important; border: none !important;
+    /* 2. 按钮颜色强化 */
+    div[data-testid="column"]:nth-of-type(1) button {
+        background-color: #00B578 !important; color: white !important;
+        height: 55px !important; font-size: 18px !important; font-weight: 800 !important; width: 100%;
     }
-    div[data-testid="column"]:nth-of-type(1) .stButton button { background-color: #00B578 !important; color: white !important; }
-    div[data-testid="column"]:nth-of-type(2) .stButton button { background-color: #FF3141 !important; color: white !important; }
+    div[data-testid="column"]:nth-of-type(2) button {
+        background-color: #FF3141 !important; color: white !important;
+        height: 55px !important; font-size: 18px !important; font-weight: 800 !important; width: 100%;
+    }
 
-    /* 成功动画 */
-    @keyframes scaleIn { 0% { transform: scale(0); opacity: 0; } 100% { transform: scale(1); opacity: 1; } }
+    /* 3. 动态对勾动画回归 */
+    @keyframes stroke { 100% { stroke-dashoffset: 0; } }
+    @keyframes scale { 0%, 100% { transform: none; } 50% { transform: scale3d(1.1, 1.1, 1); } }
+    @keyframes fill { 100% { box-shadow: inset 0px 0px 0px 80px #0ECB81; } }
     .success-overlay {
         position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-        background: rgba(255,255,255,0.9); z-index: 10000;
+        background: rgba(255,255,255,0.9); z-index: 9999;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
-        animation: scaleIn 0.3s ease-out;
     }
+    .checkmark { width: 80px; height: 80px; border-radius: 50%; display: block; stroke-width: 2; stroke: #0ECB81; stroke-miterlimit: 10; box-shadow: inset 0px 0px 0px #0ECB81; animation: fill .4s ease-in-out .4s forwards, scale .3s ease-in-out .9s both; }
+    .checkmark__circle { stroke-dasharray: 166; stroke-dashoffset: 166; stroke-width: 2; stroke-miterlimit: 10; stroke: #0ECB81; fill: none; animation: stroke 0.6s cubic-bezier(0.65, 0, 0.45, 1) forwards; }
+    .checkmark__check { transform-origin: 50% 50%; stroke-dasharray: 48; stroke-dashoffset: 48; animation: stroke 0.3s cubic-bezier(0.65, 0, 0.45, 1) 0.8s forwards; }
+    
+    .order-card { padding: 12px; border-bottom: 1px solid #F5F5F7; }
 </style>
 <div class="nav-bar"><span class="nav-title">事件合约</span></div>
 """, unsafe_allow_html=True)
 
-# --- 3. 完整逻辑函数 (从你提供的代码中提取) ---
+# --- 2. 逻辑函数 ---
 def get_beijing_time(): return datetime.utcnow() + timedelta(hours=8)
 
 def get_price(symbol):
     try:
         res = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}", timeout=2).json()
         return float(res['price'])
-    except:
-        try:
-            g_sym = symbol.replace("USDT", "_USDT")
-            res = requests.get(f"https://api.gateio.ws/api/v4/spot/tickers?currency_pair={g_sym}", timeout=2).json()
-            return float(res[0]['last'])
-        except: return None
+    except: return None
 
 def get_klines_smart_source(symbol, interval='1m'):
     try:
@@ -86,18 +72,8 @@ def get_klines_smart_source(symbol, interval='1m'):
         df.columns = ['time','open','high','low','close','vol']
         df['time'] = pd.to_datetime(df['time'], unit='ms') + timedelta(hours=8)
         for c in ['open','high','low','close']: df[c] = df[c].astype(float)
-        return df, "Binance"
-    except:
-        try:
-            g_sym = symbol.replace("USDT", "_USDT")
-            url = f"https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair={g_sym}&interval={interval}&limit=100"
-            res = requests.get(url, timeout=3).json()
-            df = pd.DataFrame(res).iloc[:, [0, 5, 3, 4, 2, 1]]
-            df.columns = ['time','open','high','low','close','vol']
-            df['time'] = pd.to_datetime(df['time'].astype(int), unit='s') + timedelta(hours=8)
-            for c in ['open','high','low','close']: df[c] = df[c].astype(float)
-            return df, "Gate.io"
-        except: return pd.DataFrame(), None
+        return df
+    except: return pd.DataFrame()
 
 def load_db():
     if os.path.exists(DB_FILE):
@@ -122,20 +98,21 @@ def save_db(balance, orders):
         ser.append(tmp)
     with open(DB_FILE, "w") as f: json.dump({"balance": balance, "orders": ser}, f)
 
-# 初始化状态
 if 'balance' not in st.session_state:
     st.session_state.balance, st.session_state.orders = load_db()
 
-# --- 4. 主界面逻辑 ---
+# --- 3. 主界面 ---
 @st.fragment
 def main_app():
     st_autorefresh(interval=3000, key="global_refresh")
     now_time = get_beijing_time()
     
-    # --- 顶栏配置区 ---
-    c1, c2 = st.columns([2, 1])
-    with c1: coin = st.selectbox("币种", ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"], label_visibility="collapsed")
-    with c2: k_interval = st.selectbox("周期", ["1m", "5m", "15m", "1h"], label_visibility="collapsed")
+    # 切换数据源
+    chart_mode = st.radio("数据源选择", ["原生 K 线", "TradingView"], horizontal=True, label_visibility="collapsed")
+    
+    col_sel1, col_sel2 = st.columns([2, 1])
+    with col_sel1: coin = st.selectbox("币种", ["BTCUSDT", "ETHUSDT", "SOLUSDT"], index=1, label_visibility="collapsed")
+    with col_sel2: k_interval = st.selectbox("周期", ["1m", "5m", "15m", "1h"], index=0, label_visibility="collapsed")
     
     curr_p = get_price(coin)
     
@@ -145,127 +122,100 @@ def main_app():
         for od in st.session_state.orders:
             if od['状态'] == "待结算" and now_time >= od['结算时间']:
                 od['平仓价'] = curr_p
-                win = (od['方向']=="看涨" and od['平仓价']>od['开仓价']) or (od['方向']=="看跌" and od['平仓价']<od['开仓价'])
+                win = (od['方向']=="上涨" and od['平仓价']>od['开仓价']) or (od['方向']=="下跌" and od['平仓价']<od['开仓价'])
                 st.session_state.balance += (od['金额'] * 1.8) if win else 0
-                od['收益'] = (od['金额'] * 0.8) if win else -od['金额']
-                od['状态'], od['结果'] = "已结算", "W" if win else "L"
+                od['状态'] = "已结算"
                 upd = True
         if upd: save_db(st.session_state.balance, st.session_state.orders)
 
-    # 1. 交易对赔率区
-    st.markdown(f"""
-    <div class="symbol-container">
-        <div class="symbol-name">{coin}</div>
-        <div style="text-align: right;">
-            <div class="odds-green">上涨：80%!</div>
-            <div class="odds-red">下跌：80%!</div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
+    # 1. 图表区
+    if chart_mode == "TradingView":
+        tv_i = "1" if k_interval == "1m" else k_interval.replace("m", "")
+        tv_html = f"""<div style="height:380px;"><div id="tv" style="height:380px;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{coin}","interval":"{tv_i}","theme":"light","style":"1","locale":"zh_CN","container_id":"tv","studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>"""
+        components.html(tv_html, height=380)
+    else:
+        df_k = get_klines_smart_source(coin, k_interval)
+        if not df_k.empty:
+            df_k['ma'] = df_k['close'].rolling(20).mean()
+            df_k['std'] = df_k['close'].rolling(20).std()
+            df_k['up'] = df_k['ma'] + 2*df_k['std']
+            df_k['dn'] = df_k['ma'] - 2*df_k['std']
+            
+            fig = make_subplots(rows=1, cols=1)
+            # K线颜色纯化
+            fig.add_trace(go.Candlestick(
+                x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'],
+                increasing_fillcolor='#00B578', increasing_line_color='#00B578',
+                decreasing_fillcolor='#FF3141', decreasing_line_color='#FF3141'
+            ))
+            # 布林带加粗
+            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='rgba(31,119,180,0.5)', width=2.5), name='UP'))
+            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='rgba(227,119,194,0.5)', width=2.5), name='DN'))
+            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['ma'], line=dict(color='#FFB11B', width=3), name='MB'))
 
-    # 2. K 线图表区
-    st.markdown('<div class="chart-ctrl-bar"><span class="index-label">指数价格</span></div>', unsafe_allow_html=True)
+            # --- 核心新增：实时画虚线 ---
+            for od in st.session_state.orders:
+                if od['状态'] == "待结算" and od['资产'] == coin:
+                    line_color = "#00B578" if od['方向']=="上涨" else "#FF3141"
+                    marker_symbol = "triangle-up" if od['方向']=="上涨" else "triangle-down"
+                    # 画全屏横线
+                    fig.add_hline(y=od['开仓价'], line_dash="dash", line_color=line_color, line_width=2, 
+                                  annotation_text=f"{od['方向']} ▲" if od['方向']=="上涨" else f"{od['方向']} ▼", 
+                                  annotation_position="right", annotation_font_color=line_color)
+
+            fig.update_layout(height=380, margin=dict(t=5,b=5,l=0,r=0), xaxis_rangeslider_visible=False, dragmode='pan', plot_bgcolor='white', paper_bgcolor='white', showlegend=False)
+            fig.update_yaxes(side="right", gridcolor="#F5F5F7")
+            st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
+
+    # 2. 下单区
+    bet = st.number_input("数量(USDT)", 10.0, 5000.0, 100.0)
+    st.markdown(f'<div style="text-align:right; font-size:12px; color:#8E8E93; margin-top:-10px;">可用: {st.session_state.balance:.2f}</div>', unsafe_allow_html=True)
     
-    df_k, src = get_klines_smart_source(coin, k_interval)
-    if not df_k.empty:
-        # 技术指标计算
-        df_k['ma'] = df_k['close'].rolling(20).mean()
-        df_k['std'] = df_k['close'].rolling(20).std()
-        df_k['up'] = df_k['ma'] + 2*df_k['std']; df_k['dn'] = df_k['ma'] - 2*df_k['std']
-        ema12 = df_k['close'].ewm(span=12).mean(); ema26 = df_k['close'].ewm(span=26).mean()
-        df_k['macd'] = ema12 - ema26; df_k['sig'] = df_k['macd'].ewm(span=9).mean(); df_k['hist'] = df_k['macd'] - df_k['sig']
+    btn_col1, btn_col2 = st.columns(2)
+    if btn_col1.button("上涨"):
+        if st.session_state.balance >= bet and curr_p:
+            st.session_state.balance -= bet
+            st.session_state.orders.append({"资产": coin, "方向": "上涨", "开仓价": curr_p, "平仓价": None, "金额": bet, "开仓时间": now_time, "结算时间": now_time+timedelta(minutes=5), "状态": "待结算"})
+            save_db(st.session_state.balance, st.session_state.orders); st.session_state.show_success = True; st.rerun()
 
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-        # 主图: 蜡烛 + BOLL
-        fig.add_trace(go.Candlestick(x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'], increasing_line_color='#00B578', decreasing_line_color='#FF3141', name="K线"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['ma'], line=dict(color='#FFB11B', width=1.5), name='MB'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='#1f77b4', width=1, dash='dot'), name='UP'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='#e377c2', width=1, dash='dot'), name='DN'), row=1, col=1)
-        # 副图: MACD
-        fig.add_trace(go.Bar(x=df_k['time'], y=df_k['hist'], marker_color='gray', name='Hist'), row=2, col=1)
-        
-        fig.update_layout(height=350, margin=dict(t=5,b=5,l=0,r=0), xaxis_rangeslider_visible=False, dragmode='pan', plot_bgcolor='white', paper_bgcolor='white', showlegend=False)
-        fig.update_yaxes(side="right", gridcolor="#F5F5F7")
-        st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displayModeBar': False})
-        
-        # 指标参数文本
-        last = df_k.iloc[-1]
+    if btn_col2.button("下跌"):
+        if st.session_state.balance >= bet and curr_p:
+            st.session_state.balance -= bet
+            st.session_state.orders.append({"资产": coin, "方向": "下跌", "开仓价": curr_p, "平仓价": None, "金额": bet, "开仓时间": now_time, "结算时间": now_time+timedelta(minutes=5), "状态": "待结算"})
+            save_db(st.session_state.balance, st.session_state.orders); st.session_state.show_success = True; st.rerun()
+
+    # 3. 流水区
+    st.markdown('<div style="margin-top:20px; font-weight:700; border-bottom:2px solid #00B578; width:fit-content;">交易详情流水</div>', unsafe_allow_html=True)
+    for o in reversed(st.session_state.orders[-10:]):
+        color = "#00B578" if o['方向'] == "上涨" else "#FF3141"
         st.markdown(f"""
-        <div style="padding: 0 16px; font-size: 10px; color: #8E8E93; background: #F5F5F7;">
-            BOLL(20,2) UP:{last['up']:.2f} MB:{last['ma']:.2f} DN:{last['dn']:.2f}<br>
-            DIF:{last['macd']:.2f} DEA:{last['sig']:.2f} MACD:{last['hist']:.2f}
+        <div class="order-card">
+            <div style="display:flex; justify-content:space-between;">
+                <span style="font-weight:700; color:{color};">{o['方向']} {o['资产']}</span>
+                <span style="font-weight:700;">${o['金额']}</span>
+            </div>
+            <div style="display:grid; grid-template-columns: 1fr 1fr; font-size: 11px; color:#8E8E93; margin-top:5px;">
+                <div>开仓价: <b style="color:#000">{o['开仓价']:,.2f}</b></div>
+                <div>平仓价: <b style="color:#000">{o['平仓价'] or '进行中'}</b></div>
+                <div>时间(开): {o['开仓时间'].strftime('%H:%M:%S')}</div>
+                <div>时间(平): {o['结算时间'].strftime('%H:%M:%S')}</div>
+            </div>
         </div>
         """, unsafe_allow_html=True)
 
-    # 3. 交易输入区 (原生组件美化，确保可点)
-    st.markdown('<div style="height: 10px;"></div>', unsafe_allow_html=True)
-    bet = st.number_input("数量(USDT)", 10.0, 5000.0, 100.0, step=10.0)
-    st.markdown(f'<div style="text-align: right; padding: 0 16px; font-size: 12px; color: #8E8E93; margin-top: -15px;">可用 {st.session_state.balance:,.2f} USDT</div>', unsafe_allow_html=True)
-    
-    st.markdown(f"""
-    <div style="padding: 12px 16px; border-top: 1px solid #F5F5F7;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-            <span style="font-size: 16px;">支付率</span>
-            <span style="color: #00B578; font-weight: 600;">80%!</span>
+# 动态对勾动画组件
+if st.session_state.get('show_success'):
+    st.markdown("""
+        <div class="success-overlay">
+            <svg class="checkmark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52">
+                <circle class="checkmark__circle" cx="26" cy="26" r="25" fill="none"/>
+                <path class="checkmark__check" fill="none" d="M14.1 27.2l7.1 7.2 16.7-16.8"/>
+            </svg>
+            <h2 style="color: #0ECB81; margin-top: 20px;">开仓成功</h2>
         </div>
-        <div style="display: flex; justify-content: space-between;">
-            <span style="font-size: 16px;">U本位合约</span>
-            <span style="font-weight: 600;">{st.session_state.balance:,.2f} USDT+</span>
-        </div>
-    </div>
     """, unsafe_allow_html=True)
+    time.sleep(1.2)
+    st.session_state.show_success = False
+    st.rerun()
 
-    # 4. 操作按钮
-    st.markdown('<div style="height: 10px;"></div>', unsafe_allow_html=True)
-    btn_col1, btn_col2 = st.columns(2)
-    duration = 5 # 默认 5 分钟结算
-    
-    if btn_col1.button("上涨", use_container_width=True) and curr_p:
-        if st.session_state.balance >= bet:
-            st.session_state.balance -= bet
-            st.session_state.orders.append({"资产": coin, "方向": "看涨", "开仓价": curr_p, "平仓价": None, "金额": bet, "开仓时间": now_time, "结算时间": now_time+timedelta(minutes=duration), "状态": "待结算", "结果": None})
-            save_db(st.session_state.balance, st.session_state.orders)
-            st.session_state.show_success = True; st.rerun()
-
-    if btn_col2.button("下跌", use_container_width=True) and curr_p:
-        if st.session_state.balance >= bet:
-            st.session_state.balance -= bet
-            st.session_state.orders.append({"资产": coin, "方向": "看跌", "开仓价": curr_p, "平仓价": None, "金额": bet, "开仓时间": now_time, "结算时间": now_time+timedelta(minutes=duration), "状态": "待结算", "结果": None})
-            save_db(st.session_state.balance, st.session_state.orders)
-            st.session_state.show_success = True; st.rerun()
-
-    # 5. 订单列表 (缝合你的流水逻辑)
-    st.markdown('<div style="height: 20px; background: #F5F5F7; margin: 15px -1rem 0 -1rem;"></div>', unsafe_allow_html=True)
-    st.markdown('<div style="padding: 10px 16px; font-weight: 700; border-bottom: 2px solid #00B578; width: fit-content;">已开仓/流水</div>', unsafe_allow_html=True)
-    
-    if not st.session_state.orders:
-        st.info("暂无交易记录")
-    else:
-        for o in reversed(st.session_state.orders[-15:]):
-            color = "#00B578" if o['方向'] == "看涨" else "#FF3141"
-            icon = "▲" if o['方向'] == "看涨" else "▼"
-            status_txt = o['结果'] if o['结果'] else "进行中..."
-            st.markdown(f"""
-            <div style="padding: 12px 16px; border-bottom: 1px solid #F5F5F7;">
-                <div style="display: flex; justify-content: space-between;">
-                    <span style="font-weight: 600;"><span style="color:{color}">{icon}</span> {o['资产']}</span>
-                    <span style="color: #8E8E93; font-size: 14px;">数量 {o['金额']}</span>
-                </div>
-                <div style="font-size: 12px; color: #8E8E93; margin-top: 4px;">
-                    开仓价 {o['开仓价']:,.2f} | {o['开仓时间'].strftime('%H:%M:%S')}
-                </div>
-                <div style="font-size: 12px; color: {color}; margin-top: 2px;">
-                    支付率 80%! | 结果: {status_txt}
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-# 成功动画
-if 'show_success' not in st.session_state: st.session_state.show_success = False
-if st.session_state.show_success:
-    st.markdown('<div class="success-overlay"><h1 style="color: #00B578;">✓</h1><h2 style="color: #00B578;">下单成功</h2></div>', unsafe_allow_html=True)
-    time.sleep(1); st.session_state.show_success = False; st.rerun()
-
-# 启动
 main_app()
-
