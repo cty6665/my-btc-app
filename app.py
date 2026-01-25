@@ -8,6 +8,11 @@ from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
+# --- 核心修复：确保 Plotly 组件被明确导入 ---
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots 
+
+# 如果你的环境中可能缺失 plotly，建议在本地环境先运行: pip install plotly
 # --- 1. 核心配置 ---
 st.set_page_config(page_title="事件合约", layout="wide", initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
@@ -263,3 +268,4 @@ if st.session_state.show_success:
 
 # 启动
 main_app()
+
