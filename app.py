@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 1. 样式与配置 (仅加入防闪烁补丁)
+# 1. 样式与配置
 # ==========================================
 st.set_page_config(page_title="Binance Pro", layout="wide", initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
@@ -18,12 +18,23 @@ st.markdown("""
 <style>
     .stApp { background-color: #fcfcfc; }
     
-    /* 【补丁 A：彻底消除闪烁】隐藏右上角的 Running 加载状态 */
+    /* 核心补丁：隐藏右上角 Running 状态 */
     [data-testid="stStatusWidget"] { display: none !important; }
 
-    [data-testid="stHorizontalBlock"] {
-        align-items: center !important;
+    /* 居中对齐补丁 */
+    [data-testid="stHorizontalBlock"] { align-items: center !important; }
+
+    /* 【核心需求】：隐藏 st.number_input 自带的加减按钮 */
+    button[data-testid="stNumberInputStepUp"], 
+    button[data-testid="stNumberInputStepDown"] {
+        display: none !important;
     }
+    /* 移除输入框内的数字滚动箭轴 */
+    input[type=number]::-webkit-inner-spin-button, 
+    input[type=number]::-webkit-outer-spin-button { 
+        -webkit-appearance: none; margin: 0; 
+    }
+    input[type=number] { -moz-appearance: textfield; }
 
     .data-card {
         background: #ffffff; padding: 12px; border-radius: 12px;
@@ -43,7 +54,7 @@ st.markdown("""
     .stat-label { font-size: 0.75rem; color: #848e9c; }
     .stat-val { font-size: 1rem; font-weight: bold; margin-top: 4px; }
 
-    /* 【补丁 B：锁定图表高度】防止原生 K 线刷新时整个页面往上跳一下 */
+    /* 锁定图表容器高度，防止跳动 */
     .stPlotlyChart { min-height: 450px; }
 
     .order-card-container {
@@ -79,7 +90,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 基础逻辑 (原样保留，不做任何触碰)
+# 2. 基础逻辑 (原封不动)
 # ==========================================
 def get_beijing_time(): return datetime.utcnow() + timedelta(hours=8)
 
@@ -147,7 +158,7 @@ if 'dur' not in st.session_state: st.session_state.dur = 5
 if 'show_success' not in st.session_state: st.session_state.show_success = False
 
 # ==========================================
-# 3. 局部刷新组件 (修正 UI 跳动)
+# 3. 局部刷新组件
 # ==========================================
 
 @st.fragment
@@ -188,8 +199,9 @@ def chart_fragment():
                     color = "#0ECB81" if o['方向'] == "看涨" else "#F6465D"
                     rem_sec = int((o['结算时间'] - now).total_seconds())
                     if rem_sec > 0:
-                        fig.add_hline(y=o['開倉价'], line_dash="dash", line_color=color, line_width=1, row=1, col=1)
-                        fig.add_annotation(x=df_k['time'].iloc[-3], y=o['開倉价'], text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s", 
+                        # 【修正了这里的 KeyError，确保使用开仓价】
+                        fig.add_hline(y=o['开仓价'], line_dash="dash", line_color=color, line_width=1, row=1, col=1)
+                        fig.add_annotation(x=df_k['time'].iloc[-3], y=o['开仓价'], text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s", 
                                            showarrow=False, font=dict(size=9, color=color), bgcolor="white", opacity=0.8, row=1, col=1)
 
             colors = ['#0ECB81' if v >= 0 else '#F6465D' for v in df_k['hist']]
@@ -197,17 +209,14 @@ def chart_fragment():
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dif'], line=dict(color='#2962FF', width=1)), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dea'], line=dict(color='#FF6D00', width=1)), row=2, col=1)
             
-            # 【补丁 C：锁定视点】uirevision 确保图表刷新时，你的缩放和视角保持静止，只有 K 线在跳动
             fig.update_layout(height=450, margin=dict(t=10,b=10,l=0,r=0), xaxis_rangeslider_visible=False, plot_bgcolor='white', showlegend=False, uirevision=st.session_state.coin)
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
 @st.fragment
 def order_flow_fragment():
-    # 改动点：先把结算逻辑跑完，再计算今日盈亏，这样数据显示才实时。
     st_autorefresh(interval=1000, key="flow_refresh")
     now = get_beijing_time()
     
-    # 结算逻辑
     upd = False
     for od in st.session_state.orders:
         if od['状态'] == "待结算" and now >= od['结算时间']:
@@ -220,7 +229,6 @@ def order_flow_fragment():
                 upd = True
     if upd: save_db(st.session_state.balance, st.session_state.orders)
 
-    # 计算统计
     all_settled = [o for o in st.session_state.orders if o['状态']=="已结算"]
     today_settled = [o for o in all_settled if o['结算时间'].date() == now.date()]
     total_p = sum([(o['金额']*0.8 if o['结果']=="W" else -o['金额']) for o in all_settled])
@@ -268,7 +276,7 @@ def order_flow_fragment():
         """, unsafe_allow_html=True)
 
 # ==========================================
-# 4. 主程序 (原封不动)
+# 4. 主程序
 # ==========================================
 if st.session_state.show_success:
     st.markdown('<div class="success-overlay"><div class="checkmark-circle"><div class="checkmark"></div></div><h2 style="color:#0ECB81; margin-top:20px;">下单成功</h2></div>', unsafe_allow_html=True)
@@ -301,10 +309,12 @@ def buy(dir):
 if o1.button("🟢 买涨 (UP)", use_container_width=True): buy("看涨")
 if o2.button("🔴 买跌 (DOWN)", use_container_width=True): buy("看跌")
 
+# 下单控制区：这里只显示你写的加减号
 a1, a2, a3 = st.columns([1,2,1])
 if a1.button("➖", use_container_width=True): 
     st.session_state.bet = max(10.0, st.session_state.bet - 10.0)
     st.rerun()
+# 此框内的自带加减号已被 CSS 隐藏
 st.session_state.bet = a2.number_input("AMT", value=st.session_state.bet, step=10.0, label_visibility="collapsed")
 if a3.button("➕", use_container_width=True): 
     st.session_state.bet += 10.0
