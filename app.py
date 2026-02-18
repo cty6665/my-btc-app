@@ -260,9 +260,23 @@ def sync_bet_from_input():
     st.session_state.bet = max(10.0, float(st.session_state.bet_input))
 
 def step_bet(delta):
-    nxt = max(10.0, st.session_state.bet + delta)
-    st.session_state.bet = nxt
+    base = float(st.session_state.get('bet_input', st.session_state.bet))
+    nxt = max(10.0, base + delta)
     st.session_state.bet_input = nxt
+    st.session_state.bet = nxt
+
+def get_live_klines(symbol, interval, curr_p):
+    cache_key = f"{symbol}_{interval}"
+    now_ts = time.time()
+    cache_item = st.session_state.kline_cache.get(cache_key)
+    if (not cache_item) or ((now_ts - cache_item['ts']) >= 3):
+        fresh_df = get_klines_smart_source(symbol, interval)
+        if not fresh_df.empty:
+            st.session_state.kline_cache[cache_key] = {'ts': now_ts, 'df': fresh_df}
+            cache_item = st.session_state.kline_cache[cache_key]
+    if not cache_item:
+        return pd.DataFrame()
+    return apply_live_price_to_latest_candle(cache_item['df'], curr_p)
 
 def apply_live_price_to_latest_candle(df_k, curr_p):
     if df_k.empty or curr_p is None:
@@ -289,6 +303,7 @@ if 'balance' not in st.session_state: st.session_state.balance, st.session_state
 if 'bet' not in st.session_state: st.session_state.bet = 100.0
 if 'bet_input' not in st.session_state: st.session_state.bet_input = st.session_state.bet
 if 'price_cache' not in st.session_state: st.session_state.price_cache = {}
+if 'kline_cache' not in st.session_state: st.session_state.kline_cache = {}
 if 'last_price_meta' not in st.session_state: st.session_state.last_price_meta = {"source": "-", "nodes": 0, "spread_pct": 0.0, "time": "-"}
 if 'last_kline_meta' not in st.session_state: st.session_state.last_kline_meta = {"source": "-", "nodes": 0, "time": "-"}
 if 'coin' not in st.session_state: st.session_state.coin = "BTCUSDT"
@@ -319,8 +334,7 @@ def chart_fragment():
     else:
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
-        df_k = get_klines_smart_source(st.session_state.coin, st.session_state.interval)
-        df_k = apply_live_price_to_latest_candle(df_k, curr_p)
+        df_k = get_live_klines(st.session_state.coin, st.session_state.interval, curr_p)
         if not df_k.empty:
             df_k['ma'] = df_k['close'].rolling(20).mean()
             df_k['std'] = df_k['close'].rolling(20).std()
@@ -343,7 +357,8 @@ def chart_fragment():
                     if rem_sec > 0:
                         # 【修正了这里的 KeyError，确保使用开仓价】
                         fig.add_hline(y=o['开仓价'], line_dash="dash", line_color=color, line_width=1, row=1, col=1)
-                        fig.add_annotation(x=df_k['time'].iloc[-3], y=o['开仓价'], text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s", 
+                        anchor_i = -3 if len(df_k) >= 3 else -1
+                        fig.add_annotation(x=df_k['time'].iloc[anchor_i], y=o['开仓价'], text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s", 
                                            showarrow=False, font=dict(size=9, color=color), bgcolor="white", opacity=0.8, row=1, col=1)
 
             colors = ['#0ECB81' if v >= 0 else '#F6465D' for v in df_k['hist']]
@@ -351,8 +366,16 @@ def chart_fragment():
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dif'], line=dict(color='#2962FF', width=1)), row=2, col=1)
             fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dea'], line=dict(color='#FF6D00', width=1)), row=2, col=1)
             
-            fig.update_layout(height=450, margin=dict(t=10,b=10,l=0,r=0), xaxis_rangeslider_visible=False, plot_bgcolor='white', showlegend=False, uirevision=st.session_state.coin)
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+            fig.update_layout(
+                height=450,
+                margin=dict(t=10,b=10,l=0,r=0),
+                xaxis_rangeslider_visible=False,
+                plot_bgcolor='white',
+                showlegend=False,
+                uirevision=st.session_state.coin,
+                transition=dict(duration=350, easing='cubic-in-out')
+            )
+            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="native_kline_chart")
 
 @st.fragment
 def order_flow_fragment():
@@ -392,7 +415,7 @@ def order_flow_fragment():
         if o['状态'] == "待结算":
             total_sec = (o['结算时间'] - o['开仓时间']).total_seconds()
             past_sec = (now - o['开仓时间']).total_seconds()
-            pct = min(100, max(0, int((past_sec / total_sec) * 100)))
+            pct = min(100, max(0, int((past_sec / total_sec) * 100))) if total_sec > 0 else 100
             bg = f"background: linear-gradient(90deg, rgba(252, 213, 53, 0.12) {pct}%, white {pct}%);"
             res_txt = f"正在结算 {100-pct}%"
             p_color = "#222"; p_val = "0.00"; close_price_display = "---"
@@ -455,12 +478,11 @@ if o2.button("🔴 买跌 (DOWN)", use_container_width=True): buy("看跌")
 a1, a2, a3 = st.columns([1,2,1])
 if a1.button("➖", use_container_width=True): 
     step_bet(-10.0)
-    st.rerun()
 # 此框内的自带加减号已被 CSS 隐藏
-st.number_input("AMT", min_value=10.0, step=10.0, key="bet_input", on_change=sync_bet_from_input, label_visibility="collapsed")
+amt_val = st.number_input("AMT", min_value=10.0, step=10.0, key="bet_input", label_visibility="collapsed")
+st.session_state.bet = max(10.0, float(amt_val))
 if a3.button("➕", use_container_width=True): 
     step_bet(10.0)
-    st.rerun()
 
 order_flow_fragment()
 
@@ -471,3 +493,4 @@ with st.sidebar:
         if pwd == "522087":
             if st.button("🔴 确认清空所有账户数据"):
                 st.session_state.balance = 1000.0; st.session_state.orders = []; save_db(1000.0, []); st.rerun()
+
