@@ -15,7 +15,8 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="Binance Pro", layout="wide", initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
 
-st.markdown("""
+STYLE_BLOCK = '''
+
 <style>
     .stApp { background-color: #fcfcfc; }
     
@@ -88,7 +89,10 @@ st.markdown("""
     
     .stButton button { border-radius: 12px !important; font-weight: bold !important; height: 45px !important; }
 </style>
-""", unsafe_allow_html=True)
+
+'''
+
+st.markdown(STYLE_BLOCK, unsafe_allow_html=True)
 
 # ==========================================
 # 2. 基础逻辑 (原封不动)
