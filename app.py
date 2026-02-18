@@ -1,9 +1,9 @@
  (cd "$(git rev-parse --show-toplevel)" && git apply --3way <<'EOF' 
 diff --git a/app.py b/app.py
-index da5e89bfd174aa083ee39a5f2c4274417bb75b04..528cdb0693bdde1da8e465e78ce4b7563bf3e7e6 100644
+index da5e89bfd174aa083ee39a5f2c4274417bb75b04..4063f4212e9b4c96d4f9342152c40e2b32f5c8b3 100644
 --- a/app.py
 +++ b/app.py
-@@ -1,331 +1,471 @@
+@@ -1,331 +1,473 @@
 -import streamlit as st
 -import pandas as pd
 -import requests
@@ -335,6 +335,8 @@ index da5e89bfd174aa083ee39a5f2c4274417bb75b04..528cdb0693bdde1da8e465e78ce4b756
 -        if pwd == "522087":
 -            if st.button("🔴 确认清空所有账户数据"):
 -                st.session_state.balance = 1000.0; st.session_state.orders = []; save_db(1000.0, []); st.rerun()
++"""Streamlit app entrypoint. Keep this file pure Python source (no shell patch snippets)."""
++
 +import streamlit as st
 +import pandas as pd
 +import requests
@@ -809,3 +811,6 @@ index da5e89bfd174aa083ee39a5f2c4274417bb75b04..528cdb0693bdde1da8e465e78ce4b756
  
 EOF
 )
+EOF
+)
+
