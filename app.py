@@ -90,6 +90,11 @@ STYLE_BLOCK = '''
     @keyframes scale { 0% { transform: scale(0); } 100% { transform: scale(1); } }
     
     .stButton button { border-radius: 12px !important; font-weight: bold !important; height: 45px !important; }
+    div[data-testid="stNumberInput"] input {
+        height: 45px !important;
+        text-align: center !important;
+        font-weight: 700 !important;
+    }
 </style>
 
 '''
@@ -476,13 +481,11 @@ if o2.button("🔴 买跌 (DOWN)", use_container_width=True): buy("看跌")
 
 # 下单控制区：这里只显示你写的加减号
 a1, a2, a3 = st.columns([1,2,1])
-if a1.button("➖", use_container_width=True): 
-    step_bet(-10.0)
+a1.button("➖", use_container_width=True, key="bet_minus_btn", on_click=step_bet, args=(-10.0,))
 # 此框内的自带加减号已被 CSS 隐藏
-amt_val = st.number_input("AMT", min_value=10.0, step=10.0, key="bet_input", label_visibility="collapsed")
+amt_val = a2.number_input("AMT", min_value=10.0, step=10.0, key="bet_input", on_change=sync_bet_from_input, label_visibility="collapsed")
 st.session_state.bet = max(10.0, float(amt_val))
-if a3.button("➕", use_container_width=True): 
-    step_bet(10.0)
+a3.button("➕", use_container_width=True, key="bet_plus_btn", on_click=step_bet, args=(10.0,))
 
 order_flow_fragment()
 
@@ -493,4 +496,3 @@ with st.sidebar:
         if pwd == "522087":
             if st.button("🔴 确认清空所有账户数据"):
                 st.session_state.balance = 1000.0; st.session_state.orders = []; save_db(1000.0, []); st.rerun()
-
