@@ -270,18 +270,50 @@ def step_bet(delta):
     st.session_state.bet_input = nxt
     st.session_state.bet = nxt
 
+def interval_seconds(interval):
+    return {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600}.get(interval, 60)
+
 def get_live_klines(symbol, interval, curr_p):
     cache_key = f"{symbol}_{interval}"
     now_ts = time.time()
     cache_item = st.session_state.kline_cache.get(cache_key)
-    if (not cache_item) or ((now_ts - cache_item['ts']) >= 3):
+
+    # 周期性与交易所对齐：仅低频拉取远端K线，避免每秒全量重建
+    if (not cache_item) or ((now_ts - cache_item['ts']) >= 10):
         fresh_df = get_klines_smart_source(symbol, interval)
         if not fresh_df.empty:
-            st.session_state.kline_cache[cache_key] = {'ts': now_ts, 'df': fresh_df}
+            st.session_state.kline_cache[cache_key] = {'ts': now_ts, 'df': fresh_df.copy()}
             cache_item = st.session_state.kline_cache[cache_key]
-    if not cache_item:
+
+    if not cache_item or cache_item['df'].empty:
         return pd.DataFrame()
-    return apply_live_price_to_latest_candle(cache_item['df'], curr_p)
+
+    live_df = cache_item['df'].copy()
+    if curr_p is None:
+        return live_df
+
+    now = get_beijing_time()
+    bucket_sec = int(now.timestamp() // interval_seconds(interval) * interval_seconds(interval))
+    bucket_time = pd.to_datetime(bucket_sec, unit='s')
+
+    if live_df['time'].iloc[-1] == bucket_time:
+        idx = live_df.index[-1]
+        live_df.at[idx, 'close'] = curr_p
+        live_df.at[idx, 'high'] = max(float(live_df.at[idx, 'high']), curr_p)
+        live_df.at[idx, 'low'] = min(float(live_df.at[idx, 'low']), curr_p)
+    elif live_df['time'].iloc[-1] < bucket_time:
+        new_row = {
+            'time': bucket_time,
+            'open': float(live_df['close'].iloc[-1]),
+            'high': curr_p,
+            'low': curr_p,
+            'close': curr_p,
+            'vol': 0,
+        }
+        live_df = pd.concat([live_df, pd.DataFrame([new_row])], ignore_index=True).tail(120).reset_index(drop=True)
+
+    st.session_state.kline_cache[cache_key]['df'] = live_df
+    return live_df
 
 def apply_live_price_to_latest_candle(df_k, curr_p):
     if df_k.empty or curr_p is None:
