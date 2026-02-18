@@ -283,6 +283,137 @@ def get_live_klines(symbol, interval, curr_p):
         return pd.DataFrame()
     return apply_live_price_to_latest_candle(cache_item['df'], curr_p)
 
+def render_native_incremental_chart(symbol, interval):
+    interval_sec = {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600}.get(interval, 60)
+    html = f"""
+    <div id="kline_wrap" style="height:450px;width:100%;"></div>
+    <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+    (function() {{
+      const symbol = "{symbol}";
+      const interval = "{interval}";
+      const intervalSec = {interval_sec};
+      const root = document.getElementById('kline_wrap');
+      root.innerHTML = '';
+
+      const chart = LightweightCharts.createChart(root, {{
+        layout: {{ background: {{ color: '#ffffff' }}, textColor: '#6b7280' }},
+        rightPriceScale: {{ borderColor: '#efefef' }},
+        timeScale: {{ borderColor: '#efefef', timeVisible: true, secondsVisible: false }},
+        crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
+        grid: {{ vertLines: {{ color: '#f5f5f5' }}, horzLines: {{ color: '#f5f5f5' }} }},
+      }});
+
+      const candle = chart.addCandlestickSeries({{
+        upColor: '#0ECB81', downColor: '#F6465D', borderUpColor: '#0ECB81', borderDownColor: '#F6465D', wickUpColor: '#0ECB81', wickDownColor: '#F6465D'
+      }});
+      const ma = chart.addLineSeries({{ color: '#FFB11B', lineWidth: 1 }});
+      const up = chart.addLineSeries({{ color: 'rgba(41,98,255,0.35)', lineWidth: 1 }});
+      const dn = chart.addLineSeries({{ color: 'rgba(41,98,255,0.35)', lineWidth: 1 }});
+
+      let bars = [];
+
+      function toGate(sym) {{ return sym.replace('USDT','_USDT'); }}
+      function toOkx(sym) {{ return sym.replace('USDT','-USDT'); }}
+      function okxBar(i) {{ return ({{'1m':'1m','3m':'3m','5m':'5m','15m':'15m','30m':'30m','1h':'1H'}}[i] || '1m'); }}
+
+      async function fetchJson(url) {{
+        const r = await fetch(url, {{ cache: 'no-store' }});
+        if (!r.ok) throw new Error('bad_status');
+        return r.json();
+      }}
+
+      function median(nums) {{
+        const a = [...nums].sort((x, y) => x - y);
+        const n = a.length;
+        return n % 2 ? a[(n-1)/2] : (a[n/2-1] + a[n/2]) / 2;
+      }}
+
+      async function fetchPriceMedian() {{
+        const gate = toGate(symbol), okx = toOkx(symbol);
+        const reqs = [
+          fetchJson(`https://api.binance.com/api/v3/ticker/price?symbol=${{symbol}}`).then(d => Number(d.price)),
+          fetchJson(`https://api.gateio.ws/api/v4/spot/tickers?currency_pair=${{gate}}`).then(d => Number(d[0].last)),
+          fetchJson(`https://www.okx.com/api/v5/market/ticker?instId=${{okx}}`).then(d => Number(d.data[0].last)),
+        ];
+        const settled = await Promise.allSettled(reqs);
+        const prices = settled.filter(x => x.status === 'fulfilled' && Number.isFinite(x.value)).map(x => x.value);
+        if (!prices.length) return null;
+        return median(prices);
+      }}
+
+      function calcBands(data) {{
+        const close = data.map(b => b.close);
+        const maOut = [], upOut = [], dnOut = [];
+        for (let i = 0; i < close.length; i++) {{
+          if (i < 19) {{ maOut.push(null); upOut.push(null); dnOut.push(null); continue; }}
+          const w = close.slice(i - 19, i + 1);
+          const m = w.reduce((s, v) => s + v, 0) / 20;
+          const variance = w.reduce((s, v) => s + Math.pow(v - m, 2), 0) / 20;
+          const std = Math.sqrt(variance);
+          maOut.push(m); upOut.push(m + 2 * std); dnOut.push(m - 2 * std);
+        }}
+        return {{ maOut, upOut, dnOut }};
+      }}
+
+      function redrawIndicators() {{
+        const {{ maOut, upOut, dnOut }} = calcBands(bars);
+        ma.setData(bars.map((b, i) => (maOut[i] == null ? null : {{ time: b.time, value: maOut[i] }})).filter(Boolean));
+        up.setData(bars.map((b, i) => (upOut[i] == null ? null : {{ time: b.time, value: upOut[i] }})).filter(Boolean));
+        dn.setData(bars.map((b, i) => (dnOut[i] == null ? null : {{ time: b.time, value: dnOut[i] }})).filter(Boolean));
+      }}
+
+      async function fetchKlinesOnce() {{
+        const gate = toGate(symbol), okx = toOkx(symbol), ob = okxBar(interval);
+        const reqs = [
+          fetchJson(`https://api.binance.com/api/v3/klines?symbol=${{symbol}}&interval=${{interval}}&limit=120`).then(rows => rows.map(r => ({{ time: Math.floor(Number(r[0]) / 1000), open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]) }}))),
+          fetchJson(`https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=${{gate}}&interval=${{interval}}&limit=120`).then(rows => rows.map(r => ({{ time: Number(r[0]), open: Number(r[5]), high: Number(r[3]), low: Number(r[4]), close: Number(r[2]) }}))),
+          fetchJson(`https://www.okx.com/api/v5/market/candles?instId=${{okx}}&bar=${{ob}}&limit=120`).then(d => d.data.map(r => ({{ time: Math.floor(Number(r[0]) / 1000), open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]) }})).reverse()),
+        ];
+        const settled = await Promise.allSettled(reqs);
+        const candidates = settled.filter(x => x.status === 'fulfilled' && x.value?.length).map(x => x.value);
+        if (!candidates.length) return;
+        bars = candidates.sort((a, b) => b[b.length - 1].time - a[a.length - 1].time)[0];
+        candle.setData(bars);
+        redrawIndicators();
+      }}
+
+      async function liveTick() {{
+        if (!bars.length) return;
+        const p = await fetchPriceMedian();
+        if (p == null) return;
+        const now = Math.floor(Date.now() / 1000);
+        const bucket = Math.floor(now / intervalSec) * intervalSec;
+        const last = bars[bars.length - 1];
+
+        if (last.time === bucket) {{
+          const upd = {{ ...last, close: p, high: Math.max(last.high, p), low: Math.min(last.low, p) }};
+          bars[bars.length - 1] = upd;
+          candle.update(upd);
+        }} else if (bucket > last.time) {{
+          const n = {{ time: bucket, open: last.close, high: p, low: p, close: p }};
+          bars.push(n);
+          if (bars.length > 120) bars = bars.slice(-120);
+          candle.update(n);
+        }}
+        redrawIndicators();
+      }}
+
+      fetchKlinesOnce().then(() => {{
+        liveTick();
+        setInterval(liveTick, 1000);
+        setInterval(fetchKlinesOnce, 10000);
+      }});
+
+      window.addEventListener('resize', () => {{
+        chart.applyOptions({{ width: root.clientWidth }});
+      }});
+      chart.applyOptions({{ width: root.clientWidth, height: 450 }});
+    }})();
+    </script>
+    """
+    components.html(html, height=450)
+
 def apply_live_price_to_latest_candle(df_k, curr_p):
     if df_k.empty or curr_p is None:
         return df_k
@@ -337,50 +468,7 @@ def chart_fragment():
         tv_html = f'<div style="height:450px;"><div id="tv" style="height:450px;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{st.session_state.coin}","interval":"{tv_i}","theme":"light","style":"1","locale":"zh_CN","container_id":"tv","studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>'
         components.html(tv_html, height=450)
     else:
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-        df_k = get_live_klines(st.session_state.coin, st.session_state.interval, curr_p)
-        if not df_k.empty:
-            df_k['ma'] = df_k['close'].rolling(20).mean()
-            df_k['std'] = df_k['close'].rolling(20).std()
-            df_k['up'] = df_k['ma'] + 2*df_k['std']; df_k['dn'] = df_k['ma'] - 2*df_k['std']
-            ema12 = df_k['close'].ewm(span=12, adjust=False).mean()
-            ema26 = df_k['close'].ewm(span=26, adjust=False).mean()
-            df_k['dif'] = ema12 - ema26; df_k['dea'] = df_k['dif'].ewm(span=9, adjust=False).mean()
-            df_k['hist'] = df_k['dif'] - df_k['dea']
-
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1), fill='tonexty', fillcolor='rgba(41, 98, 255, 0.03)') , row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['ma'], line=dict(color='#FFB11B', width=1)), row=1, col=1)
-            fig.add_trace(go.Candlestick(x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'], increasing_fillcolor='#0ECB81', decreasing_fillcolor='#F6465D'), row=1, col=1)
-            
-            for o in st.session_state.orders:
-                if o['状态'] == "待结算" and o['资产'] == st.session_state.coin:
-                    color = "#0ECB81" if o['方向'] == "看涨" else "#F6465D"
-                    rem_sec = int((o['结算时间'] - now).total_seconds())
-                    if rem_sec > 0:
-                        # 【修正了这里的 KeyError，确保使用开仓价】
-                        fig.add_hline(y=o['开仓价'], line_dash="dash", line_color=color, line_width=1, row=1, col=1)
-                        anchor_i = -3 if len(df_k) >= 3 else -1
-                        fig.add_annotation(x=df_k['time'].iloc[anchor_i], y=o['开仓价'], text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s", 
-                                           showarrow=False, font=dict(size=9, color=color), bgcolor="white", opacity=0.8, row=1, col=1)
-
-            colors = ['#0ECB81' if v >= 0 else '#F6465D' for v in df_k['hist']]
-            fig.add_trace(go.Bar(x=df_k['time'], y=df_k['hist'], marker_color=colors), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dif'], line=dict(color='#2962FF', width=1)), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dea'], line=dict(color='#FF6D00', width=1)), row=2, col=1)
-            
-            fig.update_layout(
-                height=450,
-                margin=dict(t=10,b=10,l=0,r=0),
-                xaxis_rangeslider_visible=False,
-                plot_bgcolor='white',
-                showlegend=False,
-                uirevision=st.session_state.coin,
-                transition=dict(duration=350, easing='cubic-in-out')
-            )
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="native_kline_chart")
+        render_native_incremental_chart(st.session_state.coin, st.session_state.interval)
 
 @st.fragment
 def order_flow_fragment():
@@ -496,3 +584,5 @@ with st.sidebar:
         if pwd == "522087":
             if st.button("🔴 确认清空所有账户数据"):
                 st.session_state.balance = 1000.0; st.session_state.orders = []; save_db(1000.0, []); st.rerun()
+
+
