@@ -273,6 +273,110 @@ def step_bet(delta):
 def interval_seconds(interval):
     return {"1m": 60, "3m": 180, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600}.get(interval, 60)
 
+def get_bucket_time(interval, now=None):
+    now = now or get_beijing_time()
+    step = interval_seconds(interval)
+    bucket_sec = int(now.timestamp() // step * step)
+    return pd.to_datetime(bucket_sec, unit='s')
+
+def build_incremental_indicators(history_df):
+    if history_df.empty:
+        return history_df.copy()
+    ind_df = history_df.copy()
+    ind_df['ma'] = ind_df['close'].rolling(20).mean()
+    ind_df['std'] = ind_df['close'].rolling(20).std()
+    ind_df['up'] = ind_df['ma'] + 2 * ind_df['std']
+    ind_df['dn'] = ind_df['ma'] - 2 * ind_df['std']
+    ema12 = ind_df['close'].ewm(span=12, adjust=False).mean()
+    ema26 = ind_df['close'].ewm(span=26, adjust=False).mean()
+    ind_df['dif'] = ema12 - ema26
+    ind_df['dea'] = ind_df['dif'].ewm(span=9, adjust=False).mean()
+    ind_df['hist'] = ind_df['dif'] - ind_df['dea']
+    return ind_df
+
+def get_live_klines_incremental(symbol, interval, curr_p):
+    cache_key = f"{symbol}_{interval}"
+    now = get_beijing_time()
+    now_ts = time.time()
+    bucket_time = get_bucket_time(interval, now)
+    runtime = st.session_state.kline_runtime.setdefault(cache_key, {
+        'last_sync_ts': 0.0,
+        'history_df': pd.DataFrame(),
+        'active_candle': None,
+        'active_bucket': None,
+        'indicator_df': pd.DataFrame(),
+        'indicator_sig': None,
+    })
+
+    # 低频同步交易所：历史K线按周期批量校准，非每秒全量重建
+    if (now_ts - runtime['last_sync_ts']) >= 10:
+        fresh_df = get_klines_smart_source(symbol, interval)
+        if not fresh_df.empty:
+            closed_df = fresh_df[fresh_df['time'] < bucket_time].copy().tail(119).reset_index(drop=True)
+            bucket_df = fresh_df[fresh_df['time'] == bucket_time]
+
+            runtime['history_df'] = closed_df
+            if not bucket_df.empty:
+                row = bucket_df.iloc[-1]
+                runtime['active_candle'] = {
+                    'time': row['time'],
+                    'open': float(row['open']),
+                    'high': float(row['high']),
+                    'low': float(row['low']),
+                    'close': float(row['close']),
+                    'vol': float(row.get('vol', 0) or 0),
+                }
+                runtime['active_bucket'] = bucket_time
+            elif not closed_df.empty:
+                px = float(closed_df['close'].iloc[-1])
+                runtime['active_candle'] = {'time': bucket_time, 'open': px, 'high': px, 'low': px, 'close': px, 'vol': 0.0}
+                runtime['active_bucket'] = bucket_time
+
+            runtime['last_sync_ts'] = now_ts
+
+    active = runtime['active_candle']
+    if active is None:
+        hist = runtime['history_df']
+        if hist.empty:
+            return pd.DataFrame(), pd.DataFrame(), None
+        px = float(hist['close'].iloc[-1])
+        active = {'time': bucket_time, 'open': px, 'high': px, 'low': px, 'close': px, 'vol': 0.0}
+        runtime['active_candle'] = active
+        runtime['active_bucket'] = bucket_time
+
+    # 新周期：仅推送上一根到历史，不做全量重绘
+    if runtime['active_bucket'] is not None and bucket_time > runtime['active_bucket']:
+        old_active = runtime['active_candle']
+        old_row = pd.DataFrame([old_active])
+        runtime['history_df'] = pd.concat([runtime['history_df'], old_row], ignore_index=True).tail(120).reset_index(drop=True)
+        new_open = float(old_active['close'])
+        seed = curr_p if curr_p is not None else new_open
+        runtime['active_candle'] = {
+            'time': bucket_time,
+            'open': new_open,
+            'high': max(new_open, float(seed)),
+            'low': min(new_open, float(seed)),
+            'close': float(seed),
+            'vol': 0.0,
+        }
+        runtime['active_bucket'] = bucket_time
+
+    # 当前周期：像素级等价的OHLC局部伸缩（仅更新最后一根）
+    if curr_p is not None:
+        runtime['active_candle']['close'] = float(curr_p)
+        runtime['active_candle']['high'] = max(float(runtime['active_candle']['high']), float(curr_p))
+        runtime['active_candle']['low'] = min(float(runtime['active_candle']['low']), float(curr_p))
+
+    history_df = runtime['history_df'].copy()
+    sig = (len(history_df), str(history_df['time'].iloc[-1]) if not history_df.empty else '-')
+    if sig != runtime['indicator_sig']:
+        runtime['indicator_df'] = build_incremental_indicators(history_df)
+        runtime['indicator_sig'] = sig
+
+    active_df = pd.DataFrame([runtime['active_candle']])
+    merged_df = pd.concat([history_df, active_df], ignore_index=True)
+    return merged_df, runtime['indicator_df'].copy(), runtime['active_candle'].copy()
+
 def get_live_klines(symbol, interval, curr_p):
     cache_key = f"{symbol}_{interval}"
     now_ts = time.time()
@@ -341,6 +445,7 @@ if 'bet' not in st.session_state: st.session_state.bet = 100.0
 if 'bet_input' not in st.session_state: st.session_state.bet_input = st.session_state.bet
 if 'price_cache' not in st.session_state: st.session_state.price_cache = {}
 if 'kline_cache' not in st.session_state: st.session_state.kline_cache = {}
+if 'kline_runtime' not in st.session_state: st.session_state.kline_runtime = {}
 if 'last_price_meta' not in st.session_state: st.session_state.last_price_meta = {"source": "-", "nodes": 0, "spread_pct": 0.0, "time": "-"}
 if 'last_kline_meta' not in st.session_state: st.session_state.last_kline_meta = {"source": "-", "nodes": 0, "time": "-"}
 if 'coin' not in st.session_state: st.session_state.coin = "BTCUSDT"
@@ -372,26 +477,27 @@ def chart_fragment():
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
 
-        df_k = get_live_klines(st.session_state.coin, st.session_state.interval, curr_p)
+        df_k, indicator_df, active_candle = get_live_klines_incremental(st.session_state.coin, st.session_state.interval, curr_p)
         if not df_k.empty:
-            df_k['ma'] = df_k['close'].rolling(20).mean()
-            df_k['std'] = df_k['close'].rolling(20).std()
-            df_k['up'] = df_k['ma'] + 2*df_k['std']
-            df_k['dn'] = df_k['ma'] - 2*df_k['std']
-            ema12 = df_k['close'].ewm(span=12, adjust=False).mean()
-            ema26 = df_k['close'].ewm(span=26, adjust=False).mean()
-            df_k['dif'] = ema12 - ema26
-            df_k['dea'] = df_k['dif'].ewm(span=9, adjust=False).mean()
-            df_k['hist'] = df_k['dif'] - df_k['dea']
-
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['up'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1)), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dn'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1), fill='tonexty', fillcolor='rgba(41, 98, 255, 0.03)'), row=1, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['ma'], line=dict(color='#FFB11B', width=1)), row=1, col=1)
+
+            if not indicator_df.empty:
+                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['up'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1)), row=1, col=1)
+                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['dn'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1), fill='tonexty', fillcolor='rgba(41, 98, 255, 0.03)'), row=1, col=1)
+                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['ma'], line=dict(color='#FFB11B', width=1)), row=1, col=1)
+
+                colors = ['#0ECB81' if v >= 0 else '#F6465D' for v in indicator_df['hist']]
+                fig.add_trace(go.Bar(x=indicator_df['time'], y=indicator_df['hist'], marker_color=colors), row=2, col=1)
+                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['dif'], line=dict(color='#2962FF', width=1)), row=2, col=1)
+                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['dea'], line=dict(color='#FF6D00', width=1)), row=2, col=1)
+
             fig.add_trace(go.Candlestick(
                 x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'],
                 increasing_fillcolor='#0ECB81', decreasing_fillcolor='#F6465D'
             ), row=1, col=1)
+
+            if active_candle is not None:
+                fig.add_vline(x=active_candle['time'], line_width=1, line_dash='dot', line_color='rgba(132,142,156,0.35)', row=1, col=1)
 
             for o in st.session_state.orders:
                 if o['状态'] == "待结算" and o['资产'] == st.session_state.coin:
@@ -406,10 +512,6 @@ def chart_fragment():
                             showarrow=False, font=dict(size=9, color=color), bgcolor="white", opacity=0.8, row=1, col=1
                         )
 
-            colors = ['#0ECB81' if v >= 0 else '#F6465D' for v in df_k['hist']]
-            fig.add_trace(go.Bar(x=df_k['time'], y=df_k['hist'], marker_color=colors), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dif'], line=dict(color='#2962FF', width=1)), row=2, col=1)
-            fig.add_trace(go.Scatter(x=df_k['time'], y=df_k['dea'], line=dict(color='#FF6D00', width=1)), row=2, col=1)
 
             fig.update_layout(
                 height=450,
@@ -417,7 +519,7 @@ def chart_fragment():
                 xaxis_rangeslider_visible=False,
                 plot_bgcolor='white',
                 showlegend=False,
-                uirevision=st.session_state.coin,
+                uirevision=f"{st.session_state.coin}_{st.session_state.interval}",
                 transition=dict(duration=350, easing='cubic-in-out')
             )
             st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="native_kline_chart")
