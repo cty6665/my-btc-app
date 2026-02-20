@@ -458,71 +458,94 @@ if 'show_success' not in st.session_state: st.session_state.show_success = False
 # 3. 局部刷新组件
 # ==========================================
 
+def render_native_kline_component(symbol, interval):
+    tv_i = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h"}.get(interval, "1m")
+    html = f"""
+    <div id="kline-wrap" style="width:100%;height:450px;background:#fff;border-radius:8px;"></div>
+    <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+    <script>
+      (function() {{
+        const root = document.getElementById('kline-wrap');
+        if (!root) return;
+        if (window.__nativeKlineState && window.__nativeKlineState.symbol === '{symbol}' && window.__nativeKlineState.interval === '{tv_i}') {{
+          return;
+        }}
+        if (window.__nativeKlineState && window.__nativeKlineState.ws) {{
+          try {{ window.__nativeKlineState.ws.close(); }} catch(e) {{}}
+        }}
+        root.innerHTML = '';
+
+        const chart = LightweightCharts.createChart(root, {{
+          layout: {{ background: {{ color: '#ffffff' }}, textColor: '#666' }},
+          grid: {{ vertLines: {{ color: '#f3f3f3' }}, horzLines: {{ color: '#f3f3f3' }} }},
+          rightPriceScale: {{ borderColor: '#eee' }},
+          timeScale: {{ borderColor: '#eee', timeVisible: true, secondsVisible: false }},
+          crosshair: {{ mode: LightweightCharts.CrosshairMode.Normal }},
+          localization: {{ locale: 'zh-CN' }},
+        }});
+        const candleSeries = chart.addCandlestickSeries({{
+          upColor: '#0ECB81', downColor: '#F6465D', borderVisible: false,
+          wickUpColor: '#0ECB81', wickDownColor: '#F6465D'
+        }});
+
+        const state = {{ symbol: '{symbol}', interval: '{tv_i}', chart, candleSeries, lastBar: null, ws: null }};
+        window.__nativeKlineState = state;
+
+        function resize() {{
+          const w = root.clientWidth || 1200;
+          chart.applyOptions({{ width: w, height: 450 }});
+        }}
+        resize();
+        window.addEventListener('resize', resize);
+
+        const restUrl = `https://api.binance.com/api/v3/klines?symbol={symbol}&interval={tv_i}&limit=300`;
+        fetch(restUrl).then(r => r.json()).then(rows => {{
+          const data = rows.map(r => ({{
+            time: Math.floor(r[0] / 1000),
+            open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]),
+          }}));
+          candleSeries.setData(data);
+          state.lastBar = data[data.length - 1] || null;
+          chart.timeScale().scrollToRealTime();
+        }}).catch(() => {{}});
+
+        const stream = '{symbol}'.toLowerCase() + '@kline_' + '{tv_i}';
+        const ws = new WebSocket('wss://stream.binance.com:9443/ws/' + stream);
+        state.ws = ws;
+        ws.onmessage = (evt) => {{
+          try {{
+            const msg = JSON.parse(evt.data);
+            const k = msg.k;
+            if (!k) return;
+            const bar = {{
+              time: Math.floor(Number(k.t) / 1000),
+              open: Number(k.o), high: Number(k.h), low: Number(k.l), close: Number(k.c)
+            }};
+            candleSeries.update(bar);
+            state.lastBar = bar;
+          }} catch(e) {{}}
+        }};
+      }})();
+    </script>
+    """
+    components.html(html, height=450)
+
+
 @st.fragment
 def chart_fragment():
-    st_autorefresh(interval=1000, key="chart_refresh")
-    now = get_beijing_time()
     curr_p = get_price(st.session_state.coin)
-    
+
     c1, c2 = st.columns(2)
     c1.markdown(f'<div class="data-card balance-border"><div class="card-label">可用余额</div><div class="card-value">${st.session_state.balance:,.2f}</div></div>', unsafe_allow_html=True)
     c2.markdown(f'<div class="data-card"><div class="card-label">{st.session_state.coin} 现价</div><div class="card-value">${(curr_p if curr_p else 0):,.2f}</div></div>', unsafe_allow_html=True)
-    st.caption(f"价格源: {st.session_state.last_price_meta['source']} | 节点: {st.session_state.last_price_meta['nodes']}/3 | 偏差: {st.session_state.last_price_meta['spread_pct']:.4f}% | K线源: {st.session_state.last_kline_meta['source']}({st.session_state.last_kline_meta['nodes']}/3)")
+    st.caption(f"价格源: {st.session_state.last_price_meta['source']} | 节点: {st.session_state.last_price_meta['nodes']}/3 | 偏差: {st.session_state.last_price_meta['spread_pct']:.4f}% | K线源: Binance WebSocket(实时增量)")
 
     if st.session_state.mode == "TradingView":
         tv_i = {"1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30", "1h": "60"}.get(st.session_state.interval, "1")
         tv_html = f'<div style="height:450px;"><div id="tv" style="height:450px;"></div><script src="https://s3.tradingview.com/tv.js"></script><script>new TradingView.widget({{"autosize":true,"symbol":"BINANCE:{st.session_state.coin}","interval":"{tv_i}","theme":"light","style":"1","locale":"zh_CN","container_id":"tv","studies":["BB@tv-basicstudies","MACD@tv-basicstudies"]}});</script></div>'
         components.html(tv_html, height=450)
     else:
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-
-        df_k, indicator_df, active_candle = get_live_klines_incremental(st.session_state.coin, st.session_state.interval, curr_p)
-        if not df_k.empty:
-            fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
-
-            if not indicator_df.empty:
-                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['up'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1)), row=1, col=1)
-                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['dn'], line=dict(color='rgba(41, 98, 255, 0.2)', width=1), fill='tonexty', fillcolor='rgba(41, 98, 255, 0.03)'), row=1, col=1)
-                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['ma'], line=dict(color='#FFB11B', width=1)), row=1, col=1)
-
-                colors = ['#0ECB81' if v >= 0 else '#F6465D' for v in indicator_df['hist']]
-                fig.add_trace(go.Bar(x=indicator_df['time'], y=indicator_df['hist'], marker_color=colors), row=2, col=1)
-                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['dif'], line=dict(color='#2962FF', width=1)), row=2, col=1)
-                fig.add_trace(go.Scatter(x=indicator_df['time'], y=indicator_df['dea'], line=dict(color='#FF6D00', width=1)), row=2, col=1)
-
-            fig.add_trace(go.Candlestick(
-                x=df_k['time'], open=df_k['open'], high=df_k['high'], low=df_k['low'], close=df_k['close'],
-                increasing_fillcolor='#0ECB81', decreasing_fillcolor='#F6465D'
-            ), row=1, col=1)
-
-            if active_candle is not None:
-                fig.add_vline(x=active_candle['time'], line_width=1, line_dash='dot', line_color='rgba(132,142,156,0.35)', row=1, col=1)
-
-            for o in st.session_state.orders:
-                if o['状态'] == "待结算" and o['资产'] == st.session_state.coin:
-                    color = "#0ECB81" if o['方向'] == "看涨" else "#F6465D"
-                    rem_sec = int((o['结算时间'] - now).total_seconds())
-                    if rem_sec > 0:
-                        fig.add_hline(y=o['开仓价'], line_dash="dash", line_color=color, line_width=1, row=1, col=1)
-                        anchor_i = -3 if len(df_k) >= 3 else -1
-                        fig.add_annotation(
-                            x=df_k['time'].iloc[anchor_i], y=o['开仓价'],
-                            text=f"{'↑' if o['方向']=='看涨' else '↓'} {rem_sec}s",
-                            showarrow=False, font=dict(size=9, color=color), bgcolor="white", opacity=0.8, row=1, col=1
-                        )
-
-
-            fig.update_layout(
-                height=450,
-                margin=dict(t=10, b=10, l=0, r=0),
-                xaxis_rangeslider_visible=False,
-                plot_bgcolor='white',
-                showlegend=False,
-                uirevision=f"{st.session_state.coin}_{st.session_state.interval}",
-                transition=dict(duration=350, easing='cubic-in-out')
-            )
-            st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="native_kline_chart")
+        render_native_kline_component(st.session_state.coin, st.session_state.interval)
 
 @st.fragment
 def order_flow_fragment():
