@@ -16,12 +16,12 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="Binance Pro", layout="wide",
 initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
-AUTH_HASH =
-"8098c92cd86b247f6d2139049a4cd860953c8a91605e548dbbb09bdffca64d0e" #
+AUTH_HASH = "8098c92cd86b247f6d2139049a4cd860953c8a91605e548dbbb09bdffca64d0e" #
 SHA256 for 522087
-logging.basicConfig(level=logging.INFO, format='%(asctime)s -
-%(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 STYLE_BLOCK = '''
 <style> .stApp { background-color: #fcfcfc; }
 [data-testid="stStatusWidget"] { display: none !important; }
@@ -464,8 +464,11 @@ if od['状态'] == "待结算" and now >= od['结算时间']:
 p_final = get_price(od['资产'])
 if p_final:
 od['平仓价'] = p_final
-win = (od['方向']=="看涨" and od['平仓价']>od['开仓价'])
-or (od['方向']=="看跌" and od['平仓价']<od['开仓价'])
+win = (
+    (od['方向']=="看涨" and od['平仓价'] > od['开仓价'])
+    or
+    (od['方向']=="看跌" and od['平仓价'] < od['开仓价'])
+)
 st.session_state.balance += (od['金额'] * 1.8) if win
 else 0
 od['状态'] = "已结算"
