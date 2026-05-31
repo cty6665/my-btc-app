@@ -18,6 +18,7 @@ initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
 AUTH_HASH = "8098c92cd86b247f6d2139049a4cd860953c8a91605e548dbbb09bdffca64d0e" #
 SHA256 for 522087
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
