@@ -16,8 +16,8 @@ from streamlit_autorefresh import st_autorefresh
 st.set_page_config(page_title="Binance Pro", layout="wide",
 initial_sidebar_state="collapsed")
 DB_FILE = "trading_db.json"
-AUTH_HASH = "8098c92cd86b247f6d2139049a4cd860953c8a91605e548dbbb09bdffca64d0e" #
-SHA256 for 522087
+AUTH_HASH = "8098c92cd86b247f6d2139049a4cd860953c8a91605e548dbbb09bdffca64d0e"
+#SHA256 for 522087
 
 logging.basicConfig(
     level=logging.INFO,
