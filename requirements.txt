@@ -1,5 +1,8 @@
-streamlit
-pandas
-requests
-plotly
-streamlit-autorefresh
+streamlit>=1.45.0
+pandas>=2.2.0
+requests>=2.31.0
+websocket-client>=1.8.0
+streamlit-lightweight-charts>=0.7.20
+plotly>=5.22.0
+streamlit-autorefresh>=1.0.1
+numpy>=1.26.0
