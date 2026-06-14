@@ -251,4 +251,7 @@ with st.sidebar:
 
 # 部署说明
 st.sidebar.markdown("""
-**依赖项** (requirements.txt):
+### 侧边栏说明
+- 功能1：实时行情
+- 功能2：持仓统计
+""") 
