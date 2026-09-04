@@ -1,29 +1,4 @@
-# -*- coding: utf-8 -*-
-"""
-事件合约（二元期权风格）模拟交易终端 —— V2 多数据源版
-=================================================================
-⚠️ 重要声明：
-  1. 本程序仅为【模拟盘 / 教学演示】，所有资金均为虚拟，不接入任何真实交易。
-  2. “二元期权 / 事件合约”在欧盟、英国等多地已被禁止向零售投资者提供，
-     请勿将本代码用于任何真实资金场景。
-  3. 赔率 1.8x 意味着长期期望为负（约 -10% 庄家优势），本程序不构成任何盈利策略。
-
-V2 核心改进 —— 三源并行行情（解决单一数据源被地区封锁 / 卡顿 / 断连）：
-  - 火币 HTX + 欧易 OKX + Gate.io 三家 WebSocket 同时连接，独立线程 + 心跳
-    + 断线自动重连 + 停滞看门狗；任意一家可用行情即不中断。
-  - 实时价格 = 三家新鲜报价的【中位数】，可抵御单源插针 / 异常报价。
-  - K 线自动取“当前最优活跃源”，REST 历史回填按优先级多源兜底。
-  - 数据层（第 2 节）完全不依赖 streamlit，可单独执行本文件自检连通性：
-        python event_contract_pro_v2.py
-
-运行方式：
-    pip install streamlit websocket-client streamlit-lightweight-charts
-    streamlit run event_contract_pro_v2.py
-"""
-
 import gzip
-import hashlib
-import hmac
 import json
 import statistics
 import sys
@@ -34,13 +9,13 @@ import uuid
 from collections import deque
 from datetime import datetime
 
+import pandas as pd
 import websocket  # pip install websocket-client
 
 # ==========================================
 # 1. 核心配置
 # ==========================================
 DB_FILE = "trading_db.json"
-AUTH_HASH = "8098c92cd86b247f6d2139049a4cd860953c8a91605e548dbbb09bdffca64d0e"  # 弱口令示例，请自行更换
 SUPPORTED_COINS = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"]
 INTERVALS = ["1m", "5m", "15m", "1h"]
 DURATION_MAP = {"5分钟": 5, "10分钟": 10, "30分钟": 30, "1小时": 60}
@@ -51,6 +26,13 @@ AUTO_REFRESH_SEC = 1         # 界面自动刷新间隔（秒）
 PRICE_STALE_SEC = 30         # 某源报价超过该秒数视为失效，不参与中位数
 STALE_KLINE_SEC = 120        # 某源 K 线超过该秒数无更新视为停滞，触发看门狗重连
 BACKOFF_BASE = 5             # 重连退避基数（秒），指数增长，封顶 120
+
+# 开仓价线样式（币安风格）：看涨红虚线 / 看跌绿虚线
+CALL_LINE_COLOR = "#f6465d"
+PUT_LINE_COLOR = "#0ecb81"
+LINE_STYLE_DASHED = 2        # lightweight-charts: 0实线 1点线 2虚线
+
+INDICATOR_OPTIONS = ["MA", "EMA", "BOLL", "RSI", "KDJ"]
 
 # 三源符号 / 周期映射（内部统一使用 BTCUSDT 与 1m/5m/15m/1h）
 SYMBOL_MAP = {
@@ -66,7 +48,15 @@ INTERVAL_MAP = {
 OKX_REST_BAR = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H"}
 SOURCE_NAMES = {"htx": "火币 HTX", "okx": "欧易 OKX", "gate": "Gate.io"}
 
-HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (event-contract-demo/2.0)"}
+HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (event-contract-demo/3.0)"}
+
+# 副图窗格基础配置（数据层内置一份，避免依赖 UI 主题变量）
+SUB_CHART_CONFIG = {
+    "layout": {"background": {"type": "solid", "color": "#0b0e11"}, "textColor": "#eaecef"},
+    "grid": {"vertLines": {"color": "#2b3139"}, "horzLines": {"color": "#2b3139"}},
+    "crosshair": {"mode": 0},
+    "timeScale": {"timeVisible": True, "secondsVisible": False, "rightOffset": 5},
+}
 
 
 # ==========================================
@@ -456,8 +446,81 @@ class MarketDataHub:
 HUB = MarketDataHub()          # 模块级单例（streamlit 模式下由 cache_resource 持有）
 
 
+# ==========================================
+# 2.5 技术指标计算（纯 pandas，零 streamlit 依赖）
+# ==========================================
+def _line_series(times, values, color, title, width=1):
+    """把一组与 K 线时间对齐的数值包装成 Line 系列（自动跳过 NaN）。"""
+    data = [{"time": int(t), "value": round(float(v), 4)}
+            for t, v in zip(times, values)
+            if v is not None and not pd.isna(v)]
+    return {"type": "Line", "data": data,
+            "options": {"color": color, "lineWidth": width, "title": title,
+                        "priceLineVisible": False, "lastValueVisible": True}}
+
+
+def build_indicator_series(klines, selected):
+    """按用户选择计算指标，返回 (主图叠加系列列表, 副图窗格列表)。
+
+    主图叠加：MA(5/10/20)、EMA(12/26)、BOLL(20,2)
+    副图窗格：RSI(14)（带 70/50/30 参考线）、KDJ(9,3,3)
+    """
+    if not klines:
+        return [], []
+    df = pd.DataFrame(klines)
+    times = df["time"].tolist()
+    close = df["close"].astype(float)
+    high = df["high"].astype(float)
+    low = df["low"].astype(float)
+    main_series, sub_panes = [], []
+
+    if "MA" in selected:
+        for n, color in [(5, "#ffffff"), (10, "#f0b90b"), (20, "#e040fb")]:
+            main_series.append(_line_series(times, close.rolling(n).mean().tolist(),
+                                            color, f"MA{n}"))
+    if "EMA" in selected:
+        for n, color in [(12, "#2196f3"), (26, "#ff9800")]:
+            main_series.append(_line_series(times, close.ewm(span=n, adjust=False).mean().tolist(),
+                                            color, f"EMA{n}"))
+    if "BOLL" in selected:
+        mid = close.rolling(20).mean()
+        std = close.rolling(20).std(ddof=0)
+        main_series.append(_line_series(times, (mid + 2 * std).tolist(), "#f6465d", "BOLL上"))
+        main_series.append(_line_series(times, mid.tolist(), "#f0b90b", "BOLL中"))
+        main_series.append(_line_series(times, (mid - 2 * std).tolist(), "#0ecb81", "BOLL下"))
+    if "RSI" in selected:
+        delta = close.diff()
+        avg_gain = delta.clip(lower=0).ewm(alpha=1 / 14, adjust=False).mean()
+        avg_loss = (-delta.clip(upper=0)).ewm(alpha=1 / 14, adjust=False).mean()
+        rs = avg_gain / avg_loss.replace(0, float("nan"))
+        rsi = (100 - 100 / (1 + rs)).fillna(50.0)
+        rsi_series = _line_series(times, rsi.tolist(), "#e040fb", "RSI14")
+        rsi_series["priceLines"] = [
+            {"price": 70, "color": "#f6465d", "lineWidth": 1, "lineStyle": LINE_STYLE_DASHED,
+             "axisLabelVisible": True, "title": ""},
+            {"price": 50, "color": "#848e9c", "lineWidth": 1, "lineStyle": 1,
+             "axisLabelVisible": True, "title": ""},
+            {"price": 30, "color": "#0ecb81", "lineWidth": 1, "lineStyle": LINE_STYLE_DASHED,
+             "axisLabelVisible": True, "title": ""},
+        ]
+        sub_panes.append({"chart": dict(SUB_CHART_CONFIG, height=140), "series": [rsi_series]})
+    if "KDJ" in selected:
+        low_n = low.rolling(9).min()
+        high_n = high.rolling(9).max()
+        rsv = ((close - low_n) / (high_n - low_n).replace(0, float("nan")) * 100).fillna(50.0)
+        k_val = rsv.ewm(alpha=1 / 3, adjust=False).mean()
+        d_val = k_val.ewm(alpha=1 / 3, adjust=False).mean()
+        j_val = 3 * k_val - 2 * d_val
+        sub_panes.append({"chart": dict(SUB_CHART_CONFIG, height=160), "series": [
+            _line_series(times, k_val.tolist(), "#ffffff", "K"),
+            _line_series(times, d_val.tolist(), "#f0b90b", "D"),
+            _line_series(times, j_val.tolist(), "#e040fb", "J"),
+        ]})
+    return main_series, sub_panes
+
+
 def hub_selftest(seconds=15):
-    """脱离 streamlit 的连通性自检：python event_contract_pro_v2.py"""
+    """脱离 streamlit 的连通性自检：python event_contract_pro_v3.py"""
     print(f"[自检] 启动三源连接，观察 {seconds} 秒 …")
     HUB.ensure_running("1m")
     t0 = time.time()
@@ -471,17 +534,25 @@ def hub_selftest(seconds=15):
         print(f"[自检] {c} 中位价 = {HUB.get_price(c):,.4f}  明细={ {SOURCE_NAMES[k]: v for k, v in HUB.get_quote_detail(c).items()} }")
     kl, src = HUB.get_klines("BTCUSDT")
     print(f"[自检] BTCUSDT K线 {len(kl)} 根，图表源={SOURCE_NAMES.get(src, '-')}")
+    if kl:
+        ms, sp = build_indicator_series(kl, ["MA", "EMA", "BOLL", "RSI", "KDJ"])
+        print(f"[自检] 指标：主图叠加 {len(ms)} 条线，副图 {len(sp)} 个窗格")
+        for s_ in ms:
+            print(f"    主图 {s_['options']['title']:<7} 末值={s_['data'][-1]['value'] if s_['data'] else '-'}")
+        for p in sp:
+            for s_ in p["series"]:
+                print(f"    副图 {s_['options']['title']:<7} 末值={s_['data'][-1]['value'] if s_['data'] else '-'}")
 
 
 if __name__ == "__main__" and "streamlit" not in sys.modules:
-    # 直接 `python event_contract_pro_v2.py` = 数据源自检模式（无需安装 streamlit）
+    # 直接 `python event_contract_pro_v3.py` = 数据源+指标自检模式（无需安装 streamlit）
     # `streamlit run` 启动时 streamlit 已在 sys.modules 中，不会误入此分支
     hub_selftest()
     sys.exit(0)
 
 
 # ==========================================
-# 3. Streamlit 应用层（界面与用户喜爱的 V1 保持一致）
+# 3. Streamlit 应用层（界面与用户喜爱的 V2 保持一致）
 # ==========================================
 import streamlit as st
 from streamlit_lightweight_charts import renderLightweightCharts
@@ -675,17 +746,26 @@ with st.container():
 with st.container():
     chart_data, chart_src = MANAGER.get_klines(st.session_state.coin)
     src_label = SOURCE_NAMES.get(chart_src, "-")
-    st.subheader(f"实时行情 · {st.session_state.coin} · {st.session_state.interval}"
-                 f"（K线源：{src_label}）")
 
+    hcol, icol = st.columns([2.2, 1])
+    hcol.subheader(f"实时行情 · {st.session_state.coin} · {st.session_state.interval}"
+                   f"（K线源：{src_label}）")
+    selected_indicators = icol.multiselect(
+        "技术指标（可叠加）", INDICATOR_OPTIONS, default=["MA"], key="indicators",
+        label_visibility="collapsed", placeholder="选择技术指标：MA / EMA / BOLL / RSI / KDJ")
+
+    # 开仓价线：看涨=红色虚线，看跌=绿色虚线；价位为开仓快照，固定不动
     price_lines = []
     for o in pending_orders:
         if o["asset"] == st.session_state.coin:
-            color = theme["win"] if o["direction"] == "call" else theme["loss"]
+            is_call = o["direction"] == "call"
             price_lines.append({
-                "price": o["open_price"], "color": color, "lineWidth": 1, "lineStyle": 1,
+                "price": o["open_price"],
+                "color": CALL_LINE_COLOR if is_call else PUT_LINE_COLOR,
+                "lineWidth": 1,
+                "lineStyle": LINE_STYLE_DASHED,
                 "axisLabelVisible": True,
-                "title": f"{'CALL' if o['direction'] == 'call' else 'PUT'} {o['amount']:.0f}U",
+                "title": f"{'CALL' if is_call else 'PUT'} {o['amount']:.0f}U",
             })
 
     chart_config = {
@@ -699,19 +779,22 @@ with st.container():
     }
 
     if chart_data:
-        renderLightweightCharts([{
-            "chart": chart_config,
-            "series": [{
-                "type": "Candlestick",
-                "data": chart_data,
-                "options": {
-                    "upColor": theme["win"], "downColor": theme["loss"],
-                    "borderUpColor": theme["win"], "borderDownColor": theme["loss"],
-                    "wickUpColor": theme["win"], "wickDownColor": theme["loss"],
-                },
-                "priceLines": price_lines,
-            }],
-        }], key="main_chart")
+        overlay_series, sub_panes = build_indicator_series(chart_data, selected_indicators)
+        candle_series = {
+            "type": "Candlestick",
+            "data": chart_data,
+            "options": {
+                "upColor": theme["win"], "downColor": theme["loss"],
+                "borderUpColor": theme["win"], "borderDownColor": theme["loss"],
+                "wickUpColor": theme["win"], "wickDownColor": theme["loss"],
+            },
+            "priceLines": price_lines,
+        }
+        panes = [{"chart": chart_config, "series": [candle_series] + overlay_series}] + sub_panes
+        # key 包含币种/周期/指标指纹：切换时强制重建图表，避免窗格数量错位
+        chart_key = (f"chart_{st.session_state.coin}_{st.session_state.interval}_"
+                     f"{'-'.join(selected_indicators) or 'none'}")
+        renderLightweightCharts(panes, key=chart_key)
     else:
         st.info("行情数据加载中…（三家数据源正在连接，若长时间空白请检查网络）")
 
@@ -776,8 +859,14 @@ with st.sidebar:
     - 风控：单笔 ≤ 余额的 **{MAX_POSITION_RATIO:.0%}**
     - 方向：**看涨**=结算价高于开仓价获胜；**看跌**=低于获胜
     - 价格口径：三家交易所实时价**中位数**，抗单源插针
+    - 开仓价线：<span style='color:{CALL_LINE_COLOR}'>看涨=红虚线</span> /
+      <span style='color:{PUT_LINE_COLOR}'>看跌=绿虚线</span>，开仓后固定不动
     - ⚠️ 1.8x 赔率 ⇒ 长期期望约 **-10%**，仅为模拟演示
-    """)
+    """, unsafe_allow_html=True)
+
+    st.markdown("### 📊 图表指标")
+    st.caption("MA(5/10/20)、EMA(12/26)、BOLL(20,2) 叠加主图；RSI(14)、KDJ(9,3,3) 独立副图。"
+               "在图表右上方下拉框自由勾选组合。")
 
     st.markdown("### 🔌 数据源状态")
     status_icon = {"online": "🟢", "connecting": "🟡", "reconnecting": "🟠",
@@ -795,20 +884,14 @@ with st.sidebar:
                                 for k, v in quote_detail.items()))
 
     st.markdown("### 🔧 数据管理")
-    if st.checkbox("重置模拟账户"):
-        password = st.text_input("授权码", type="password")
-        if password:
-            ok = hmac.compare_digest(hashlib.sha256(password.encode()).hexdigest(), AUTH_HASH)
-            if ok:
-                if st.button("🔥 确认重置"):
-                    st.session_state.balance = 10000.0
-                    st.session_state.orders = []
-                    save_db()
-                    st.toast("✅ 已重置为初始状态", icon="✅")
-                    time.sleep(0.5)
-                    st.rerun()
-            else:
-                st.error("授权码错误")
+    st.caption("一键重置余额与全部订单（无需授权码）")
+    if st.button("🔥 重置模拟账户", use_container_width=True):
+        st.session_state.balance = 10000.0
+        st.session_state.orders = []
+        save_db()
+        st.toast("✅ 已重置为初始状态", icon="✅")
+        time.sleep(0.5)
+        st.rerun()
 
     st.markdown("---")
     st.markdown("""
