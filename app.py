@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-事件合约（二元期权风格）模拟交易终端 —— V4 无闪烁刷新版
+事件合约（二元期权风格）模拟交易终端 —— V5 免闪烁 + 图表视口稳定版
 =================================================================
 ⚠️ 重要声明：
   1. 本程序仅为【模拟盘 / 教学演示】，所有资金均为虚拟，不接入任何真实交易。
@@ -8,9 +8,15 @@
      请勿将本代码用于任何真实资金场景。
   3. 赔率 1.8x 意味着长期期望为负（约 -10% 庄家优势），本程序不构成任何盈利策略。
 
-V4 新增（相对 V3）：
-  - 消除整页每秒闪烁：弃用 time.sleep + st.rerun 的阻塞式整页重跑，
-    改用 streamlit-autorefresh 后台定时触发刷新（未安装时自动回退旧方案）。
+V5 架构改动（彻底解决闪烁 + 图表拖动/缩放被重置）：
+  - 移除一切“全局定时重跑”。旧版 time.sleep+st.rerun 或 V4 的 st_autorefresh 本质
+    都是一次完整 st.rerun：脚本整页重跑 → 图表组件重挂载 → 前端 fitContent() 把
+    视口拉回全量范围，于是侧栏+图表闪烁、且每次拖动/缩放后回到初始位置。
+  - K 线图表只在主脚本渲染：仅当用户【主动操作】（改交易对/周期/指标、开仓、重置）
+    才重跑并重绘；没有任何定时器碰它，所以拖动/缩放后的视口稳定保留。
+  - 每秒需要变动的文字（最新价、余额、倒计时、源状态、结算）全部放进
+    @st.fragment(run_every=1)：Streamlit 只重跑该片段、就地更新，不重跑脚本、
+    不重建图表，因此侧栏与图表都不再闪烁。
 V3 保留：
   - 开仓价线币安风格虚线：看涨 CALL = 红色虚线，看跌 PUT = 绿色虚线；
     价位快照存在订单里，开仓后线固定不动，可对照每根 K 线看盈亏走势。
@@ -18,11 +24,11 @@ V3 保留：
   - 移除授权码：重置模拟账户一键完成。
 V2 保留：
   - 火币 HTX + 欧易 OKX + Gate.io 三源并行，价格取中位数，断线自动重连。
-  - 数据层（第 2 节）零 streamlit 依赖，可单独自检：python event_contract_pro_v4.py
+  - 数据层（第 2 节）零 streamlit 依赖，可单独自检：python event_contract_pro_v5.py
 
 运行方式：
-    pip install streamlit websocket-client streamlit-lightweight-charts streamlit-autorefresh pandas
-    streamlit run event_contract_pro_v4.py
+    pip install -r requirements.txt   # 需要 streamlit>=1.37（含 @st.fragment）
+    streamlit run event_contract_pro_v5.py
 """
 
 import gzip
@@ -547,7 +553,7 @@ def build_indicator_series(klines, selected):
 
 
 def hub_selftest(seconds=15):
-    """脱离 streamlit 的连通性自检：python event_contract_pro_v4.py"""
+    """脱离 streamlit 的连通性自检：python event_contract_pro_v5.py"""
     print(f"[自检] 启动三源连接，观察 {seconds} 秒 …")
     HUB.ensure_running("1m")
     t0 = time.time()
@@ -572,23 +578,29 @@ def hub_selftest(seconds=15):
 
 
 if __name__ == "__main__" and "streamlit" not in sys.modules:
-    # 直接 `python event_contract_pro_v4.py` = 数据源+指标自检模式（无需安装 streamlit）
+    # 直接 `python event_contract_pro_v5.py` = 数据源+指标自检模式（无需安装 streamlit）
     # `streamlit run` 启动时 streamlit 已在 sys.modules 中，不会误入此分支
     hub_selftest()
     sys.exit(0)
 
 
 # ==========================================
-# 3. Streamlit 应用层（界面与用户喜爱的 V2 保持一致）
+# ==========================================
+# 3. Streamlit 应用层（V5 免闪烁版）
+# ==========================================
+# V5 架构关键改动：
+#   - 彻底移除任何"全局定时重跑"。旧版要么 time.sleep+st.rerun()，要么
+#     st_autorefresh，两者本质都是一次完整 st.rerun()，导致整页脚本重跑、
+#     图表组件重挂载、前端 fitContent() 把视口拉回全量范围 → 闪烁 + 拖动归位。
+#   - K 线图表只在主脚本里渲染：仅当用户【主动操作】（改交易对/周期/指标、
+#     点开仓/重置）时主脚本才重跑一次，图表才会重绘。没有任何定时器会碰它，
+#     所以拖动/缩放后的视口稳定保留。
+#   - 所有"每秒要动"的文字（最新价、余额、倒计时、源状态、结算）放进
+#     @st.fragment(run_every=1)：Streamlit 只重跑这一个片段、就地更新，
+#     不重跑脚本、不重建图表，因此侧栏与图表都不再闪烁。
 # ==========================================
 import streamlit as st
 from streamlit_lightweight_charts import renderLightweightCharts
-
-try:
-    from streamlit_autorefresh import st_autorefresh  # pip install streamlit-autorefresh
-    _HAS_AUTOREFRESH = True
-except ImportError:
-    _HAS_AUTOREFRESH = False
 
 st.set_page_config(page_title="事件合约模拟终端", layout="wide", page_icon="📈")
 
@@ -597,16 +609,17 @@ theme = {
     "win": "#0ecb81", "loss": "#f6465d", "muted": "#848e9c", "brand": "#f0b90b",
 }
 
-st.markdown(f"""
-<style>
+st.markdown(
+    f"""<style>
 .stApp {{ background-color: {theme['bg']}; color: {theme['text']}; }}
 .metric-card {{ background: {theme['card']}; padding: 15px; border-radius: 8px;
                 border: 1px solid {theme['border']}; margin-bottom: 10px; }}
 .winning {{ border-left: 4px solid {theme['win']}; }}
 .losing  {{ border-left: 4px solid {theme['loss']}; }}
 .section-note {{ color: {theme['muted']}; font-size: 13px; }}
-</style>
-""", unsafe_allow_html=True)
+</style>""",
+    unsafe_allow_html=True,
+)
 
 
 @st.cache_resource
@@ -717,10 +730,6 @@ def settle_due_orders():
         save_db()
 
 
-settle_due_orders()
-
-
-# ---- 界面渲染 ----
 def fmt_hms(seconds):
     seconds = max(0, int(seconds))
     h, rem = divmod(seconds, 3600)
@@ -728,9 +737,83 @@ def fmt_hms(seconds):
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+# ==========================================
+# 3.1 局部刷新片段（@st.fragment 只重跑自身，绝不重跑主脚本 / 图表）
+# ==========================================
+@st.fragment(run_every=AUTO_REFRESH_SEC)
+def live_account_panel():
+    """账户面板：余额/最新价/待结算/胜率 + 订单结算。每秒仅就地刷新，不碰图表。"""
+    settle_due_orders()
+    cur_price = MANAGER.get_price(st.session_state.coin)
+    pending_orders = [o for o in st.session_state.orders if o["status"] == "pending"]
+    closed_orders = [o for o in st.session_state.orders if o["status"] == "closed"]
+    wins = len([o for o in closed_orders if o.get("result") == "win"])
+    win_rate = f"{wins / len(closed_orders) * 100:.1f}%" if closed_orders else "-"
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("账户余额 (USDT)", f"{st.session_state.balance:,.2f}")
+    c2.metric(f"{st.session_state.coin} 最新价",
+              f"{cur_price:,.4f}" if cur_price > 0 else "加载中…")
+    c3.metric("待结算订单", len(pending_orders))
+    c4.metric("历史胜率", win_rate)
+
+
+@st.fragment(run_every=AUTO_REFRESH_SEC)
+def live_holdings():
+    """持仓监控：倒计时与实时价方向。每秒就地刷新，不碰图表。"""
+    pending_orders = [o for o in st.session_state.orders if o["status"] == "pending"]
+    with st.container():
+        st.subheader("持仓监控")
+        if not pending_orders:
+            st.markdown("<div class='section-note'>当前没有待结算订单</div>",
+                        unsafe_allow_html=True)
+        for o in pending_orders:
+            now = time.time()
+            remaining = o["settle_ts"] - now
+            p_now = MANAGER.get_price(o["asset"])
+            in_profit = ((o["direction"] == "call" and p_now > o["open_price"])
+                         or (o["direction"] == "put" and p_now < o["open_price"])) if p_now > 0 else False
+            status_color = theme["win"] if in_profit else theme["loss"]
+            dir_label = "🟢 看涨" if o["direction"] == "call" else "🔴 看跌"
+            st.markdown(f"""
+            <div class="metric-card {'winning' if in_profit else 'losing'}">
+                <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <div><b>{dir_label}</b> · {o['asset']} · {o['amount']:.0f}U
+                         <span style="color:{theme['muted']};font-size:12px;">#{o['id']}</span></div>
+                    <div style="color:{status_color};font-weight:bold;">⏳ {fmt_hms(remaining)}</div>
+                </div>
+                <div style="display:flex;justify-content:space-between;margin-top:8px;">
+                    <div>开仓价：{o['open_price']:,.4f}</div>
+                    <div style="color:{status_color};">当前价：{p_now:,.4f}</div>
+                    <div>到期回款：{o['amount'] * PAYOUT_RATE:,.2f}U / 0U</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+
+@st.fragment(run_every=AUTO_REFRESH_SEC)
+def live_source_status():
+    """侧栏数据源状态与各源报价。每秒就地刷新，不碰图表。"""
+    status_icon = {"online": "🟢", "connecting": "🟡", "reconnecting": "🟠",
+                   "error": "🔴", "init": "⚪"}
+    sources_status = MANAGER.get_status()
+    for s, snap in sources_status.items():
+        lag = f"{snap['lag']}s前" if snap["lag"] is not None else "无数据"
+        line = f"{status_icon.get(snap['status'], '⚪')} {SOURCE_NAMES[s]}：{snap['status']} · {lag}"
+        if snap["last_error"] and snap["status"] != "online":
+            line += f" · {snap['last_error'][:60]}"
+        st.write(line)
+    quote_detail = MANAGER.get_quote_detail(st.session_state.coin)
+    if quote_detail:
+        st.caption(f"{st.session_state.coin} 各源报价："
+                   + " / ".join(f"{SOURCE_NAMES[k]} {v[0]:,.2f}({v[1]}s)"
+                                for k, v in quote_detail.items()))
+
+
+# ==========================================
+# 3.2 主脚本（仅在用户主动操作时重跑一次；图表只在这里渲染）
+# ==========================================
 st.title("📈 事件合约模拟交易终端")
 
-sources_status = MANAGER.get_status()
 healthy = MANAGER.health()
 health_icon = "🟢" if healthy >= 2 else ("🟡" if healthy == 1 else "🔴")
 st.caption(
@@ -738,21 +821,9 @@ st.caption(
     f" · 实时价=三源中位数 · 本终端为虚拟资金模拟盘，非真实交易"
 )
 
-# ---- 账户面板 ----
-cur_price = MANAGER.get_price(st.session_state.coin)
-pending_orders = [o for o in st.session_state.orders if o["status"] == "pending"]
-closed_orders = [o for o in st.session_state.orders if o["status"] == "closed"]
-wins = len([o for o in closed_orders if o.get("result") == "win"])
-win_rate = f"{wins / len(closed_orders) * 100:.1f}%" if closed_orders else "-"
+live_account_panel()
 
-col1, col2, col3, col4 = st.columns(4)
-col1.metric("账户余额 (USDT)", f"{st.session_state.balance:,.2f}")
-col2.metric(f"{st.session_state.coin} 最新价",
-            f"{cur_price:,.4f}" if cur_price > 0 else "加载中…")
-col3.metric("待结算订单", len(pending_orders))
-col4.metric("历史胜率", win_rate)
-
-# ---- 交易面板 ----
+# ---- 极速交易（主脚本：改参数即触发图表重绘，无定时器） ----
 with st.container():
     st.subheader("极速交易")
     col1, col2, col3, col4 = st.columns([1.2, 1, 1, 1.4])
@@ -764,8 +835,8 @@ with st.container():
 
     potential = st.session_state.bet_amt * PAYOUT_RATE
     st.markdown(
-        f"<div class='section-note'>命中赔付 {PAYOUT_RATE}x（含本金）："
-        f"潜在回款 <b style='color:{theme['brand']}'>{potential:,.2f}U</b>，"
+        f"<div class='section-note'>命中赔付 {PAYOUT_RATE}x（含本金）：潜在回款 "
+        f"<b style='color:{theme['brand']}'>{potential:,.2f}U</b>，"
         f"单笔上限为余额的 {MAX_POSITION_RATIO:.0%}</div>",
         unsafe_allow_html=True,
     )
@@ -775,7 +846,7 @@ with st.container():
     col2.button("🔴 看跌 PUT", on_click=commit_order, args=("put",),
                 type="secondary", use_container_width=True)
 
-# ---- 图表区域 ----
+# ---- 图表区域（只在主脚本渲染；无任何定时器重跑它 → 视口稳定） ----
 with st.container():
     chart_data, chart_src = MANAGER.get_klines(st.session_state.coin)
     src_label = SOURCE_NAMES.get(chart_src, "-")
@@ -788,6 +859,7 @@ with st.container():
         label_visibility="collapsed", placeholder="选择技术指标：MA / EMA / BOLL / RSI / KDJ")
 
     # 开仓价线：看涨=红色虚线，看跌=绿色虚线；价位为开仓快照，固定不动
+    pending_orders = [o for o in st.session_state.orders if o["status"] == "pending"]
     price_lines = []
     for o in pending_orders:
         if o["asset"] == st.session_state.coin:
@@ -824,47 +896,20 @@ with st.container():
             "priceLines": price_lines,
         }
         panes = [{"chart": chart_config, "series": [candle_series] + overlay_series}] + sub_panes
-        # key 包含币种/周期/指标指纹：切换时强制重建图表，避免窗格数量错位
+        # key 含币种/周期/指标指纹：仅切换参数时强制重建，避免窗格数量错位
         chart_key = (f"chart_{st.session_state.coin}_{st.session_state.interval}_"
                      f"{'-'.join(selected_indicators) or 'none'}")
         renderLightweightCharts(panes, key=chart_key)
     else:
         st.info("行情数据加载中…（三家数据源正在连接，若长时间空白请检查网络）")
 
-# ---- 持仓监控 ----
-with st.container():
-    st.subheader("持仓监控")
-    if not pending_orders:
-        st.markdown("<div class='section-note'>当前没有待结算订单</div>",
-                    unsafe_allow_html=True)
-    for o in pending_orders:
-        now = time.time()
-        remaining = o["settle_ts"] - now
-        p_now = MANAGER.get_price(o["asset"])
-        in_profit = (
-            (o["direction"] == "call" and p_now > o["open_price"])
-            or (o["direction"] == "put" and p_now < o["open_price"])
-        ) if p_now > 0 else False
-        status_color = theme["win"] if in_profit else theme["loss"]
-        dir_label = "🟢 看涨" if o["direction"] == "call" else "🔴 看跌"
-        st.markdown(f"""
-        <div class="metric-card {'winning' if in_profit else 'losing'}">
-            <div style="display:flex;justify-content:space-between;align-items:center;">
-                <div><b>{dir_label}</b> · {o['asset']} · {o['amount']:.0f}U
-                     <span style="color:{theme['muted']};font-size:12px;">#{o['id']}</span></div>
-                <div style="color:{status_color};font-weight:bold;">⏳ {fmt_hms(remaining)}</div>
-            </div>
-            <div style="display:flex;justify-content:space-between;margin-top:8px;">
-                <div>开仓价：{o['open_price']:,.4f}</div>
-                <div style="color:{status_color};">当前价：{p_now:,.4f}</div>
-                <div>到期回款：{o['amount'] * PAYOUT_RATE:,.2f}U / 0U</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+# ---- 持仓监控（局部刷新片段） ----
+live_holdings()
 
-# ---- 历史记录 ----
+# ---- 结算记录（主脚本：随主脚本在操作时刷新） ----
 with st.container():
     st.subheader("结算记录")
+    closed_orders = [o for o in st.session_state.orders if o["status"] == "closed"]
     if closed_orders:
         result_map = {"win": "✅ 胜", "loss": "❌ 负", "tie": "➖ 平"}
         rows = []
@@ -902,19 +947,7 @@ with st.sidebar:
                "在图表右上方下拉框自由勾选组合。")
 
     st.markdown("### 🔌 数据源状态")
-    status_icon = {"online": "🟢", "connecting": "🟡", "reconnecting": "🟠",
-                   "error": "🔴", "init": "⚪"}
-    for s, snap in sources_status.items():
-        lag = f"{snap['lag']}s前" if snap["lag"] is not None else "无数据"
-        line = f"{status_icon.get(snap['status'], '⚪')} {SOURCE_NAMES[s]}：{snap['status']} · {lag}"
-        if snap["last_error"] and snap["status"] != "online":
-            line += f" · {snap['last_error'][:60]}"
-        st.write(line)
-    quote_detail = MANAGER.get_quote_detail(st.session_state.coin)
-    if quote_detail:
-        st.caption(f"{st.session_state.coin} 各源报价："
-                   + " / ".join(f"{SOURCE_NAMES[k]} {v[0]:,.2f}({v[1]}s)"
-                                for k, v in quote_detail.items()))
+    live_source_status()
 
     st.markdown("### 🔧 数据管理")
     st.caption("一键重置余额与全部订单（无需授权码）")
@@ -933,17 +966,3 @@ with st.sidebar:
     二元期权类产品在多个司法辖区被禁止向零售投资者提供，请勿用于真实资金。
     </div>
     """, unsafe_allow_html=True)
-
-# ==========================================
-# 7. 自动刷新（倒计时 / 实时价驱动）
-# ==========================================
-# V4：用 streamlit-autorefresh 在后台定时触发 rerun，替代 time.sleep + st.rerun。
-# 旧写法每轮阻塞整页 1 秒（浏览器表现为每秒"全局闪一下"、右上角转圈）；
-# 新写法页面常驻不阻塞，到期仅触发一次无阻塞脚本重跑，配合固定 key 的图表，
-# 整页闪烁基本消失（仅剩最后一根 K 线的就地刷新，属正常跳动）。
-if _HAS_AUTOREFRESH:
-    st_autorefresh(interval=AUTO_REFRESH_SEC * 1000, limit=None, key="global_autorefresh")
-else:
-    # 兜底：未安装 streamlit-autorefresh 时退回旧方案（会有闪烁，建议安装）
-    time.sleep(AUTO_REFRESH_SEC)
-    st.rerun()
