@@ -67,7 +67,7 @@ CALL_LINE_COLOR = "#f6465d"
 PUT_LINE_COLOR = "#0ecb81"
 LINE_STYLE_DASHED = 2        # lightweight-charts: 0实线 1点线 2虚线
 
-INDICATOR_OPTIONS = ["MA", "EMA", "BOLL", "RSI", "KDJ"]
+INDICATOR_OPTIONS = ["MA", "EMA", "BOLL", "MACD", "RSI", "KDJ"]
 
 # 多源符号 / 周期映射（内部统一使用 BTCUSDT 与 1m/5m/15m/1h）
 SYMBOL_MAP = {
@@ -588,6 +588,173 @@ def build_indicator_series(klines, selected):
             _line_series(times, j_val.tolist(), "#e040fb", "J"),
         ]})
     return main_series, sub_panes
+
+
+def calc_macd(klines, fast=12, slow=26, signal=9):
+    """计算MACD指标：DIF = EMA_fast - EMA_slow, DEA = EMA_signal(DIF), MACD柱 = (DIF-DEA)*2"""
+    closes = [k["close"] for k in klines]
+    times = [k["time"] for k in klines]
+    if len(closes) < slow + signal:
+        return [], [], []
+    
+    s = pd.Series(closes)
+    ema_fast = s.ewm(span=fast, adjust=False).mean()
+    ema_slow = s.ewm(span=slow, adjust=False).mean()
+    dif = ema_fast - ema_slow
+    dea = dif.ewm(span=signal, adjust=False).mean()
+    macd_hist = (dif - dea) * 2
+    
+    dif_list = [{"time": int(t), "value": round(float(v), 4)} for t, v in zip(times, dif)]
+    dea_list = [{"time": int(t), "value": round(float(v), 4)} for t, v in zip(times, dea)]
+    hist_list = [{"time": int(t), "value": round(float(v), 4)} for t, v in zip(times, macd_hist)]
+    return dif_list, dea_list, hist_list
+
+
+def plot_candlestick_chart(klines, indicators, symbol="BTCUSDT"):
+    """用plotly绘制原生K线图 + 技术指标"""
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    
+    if not klines:
+        return go.Figure()
+    
+    # 准备数据
+    df = pd.DataFrame(klines)
+    df["datetime"] = pd.to_datetime(df["time"], unit="s")
+    
+    # 确定副图数量
+    subplot_count = 1
+    row_heights = [0.7]
+    if "RSI" in indicators:
+        subplot_count += 1
+        row_heights.append(0.15)
+    if "KDJ" in indicators:
+        subplot_count += 1
+        row_heights.append(0.15)
+    if "MACD" in indicators:
+        subplot_count += 1
+        row_heights.append(0.2)
+    
+    fig = make_subplots(
+        rows=subplot_count, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.02,
+        row_heights=row_heights,
+    )
+    
+    # 1. K线主图
+    fig.add_trace(go.Candlestick(
+        x=df["datetime"],
+        open=df["open"], high=df["high"], low=df["low"], close=df["close"],
+        name="K线",
+        increasing_line_color="#0ecb81",
+        decreasing_line_color="#f6465d",
+    ), row=1, col=1)
+    
+    # 2. 主图叠加指标
+    closes = df["close"]
+    times = df["datetime"]
+    
+    if "MA" in indicators:
+        for period, color in [(5, "#f0b90b"), (10, "#848e9c"), (20, "#e64980")]:
+            ma = closes.rolling(window=period).mean()
+            fig.add_trace(go.Scatter(
+                x=times, y=ma, mode="lines",
+                name=f"MA{period}", line=dict(color=color, width=1),
+            ), row=1, col=1)
+    
+    if "EMA" in indicators:
+        ema12 = closes.ewm(span=12, adjust=False).mean()
+        ema26 = closes.ewm(span=26, adjust=False).mean()
+        fig.add_trace(go.Scatter(x=times, y=ema12, mode="lines", name="EMA12",
+                                line=dict(color="#f0b90b", width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=times, y=ema26, mode="lines", name="EMA26",
+                                line=dict(color="#e64980", width=1)), row=1, col=1)
+    
+    if "BOLL" in indicators:
+        ma20 = closes.rolling(window=20).mean()
+        std20 = closes.rolling(window=20).std()
+        upper = ma20 + 2 * std20
+        lower = ma20 - 2 * std20
+        fig.add_trace(go.Scatter(x=times, y=upper, mode="lines", name="BOLL上轨",
+                                line=dict(color="#848e9c", width=1, dash="dash")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=times, y=ma20, mode="lines", name="BOLL中轨",
+                                line=dict(color="#f0b90b", width=1)), row=1, col=1)
+        fig.add_trace(go.Scatter(x=times, y=lower, mode="lines", name="BOLL下轨",
+                                line=dict(color="#848e9c", width=1, dash="dash"), fill="tonexty"), row=1, col=1)
+    
+    current_row = 2
+    
+    # 3. RSI副图
+    if "RSI" in indicators:
+        delta = closes.diff()
+        gain = delta.where(delta > 0, 0)
+        loss = -delta.where(delta < 0, 0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        fig.add_trace(go.Scatter(x=times, y=rsi, mode="lines", name="RSI(14)",
+                                line=dict(color="#e64980", width=1.5)), row=current_row, col=1)
+        fig.add_hline(y=70, line_dash="dash", line_color="#f6465d", row=current_row, col=1)
+        fig.add_hline(y=30, line_dash="dash", line_color="#0ecb81", row=current_row, col=1)
+        fig.update_yaxes(title_text="RSI", row=current_row, col=1, range=[0, 100])
+        current_row += 1
+    
+    # 4. KDJ副图
+    if "KDJ" in indicators:
+        low_list = df["low"].rolling(window=9).min()
+        high_list = df["high"].rolling(window=9).max()
+        rsv = (closes - low_list) / (high_list - low_list) * 100
+        k = rsv.ewm(com=2, adjust=False).mean()
+        d = k.ewm(com=2, adjust=False).mean()
+        j = 3 * k - 2 * d
+        
+        fig.add_trace(go.Scatter(x=times, y=k, mode="lines", name="K",
+                                line=dict(color="#f0b90b", width=1)), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=times, y=d, mode="lines", name="D",
+                                line=dict(color="#e64980", width=1)), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=times, y=j, mode="lines", name="J",
+                                line=dict(color="#0ecb81", width=1)), row=current_row, col=1)
+        fig.update_yaxes(title_text="KDJ", row=current_row, col=1)
+        current_row += 1
+    
+    # 5. MACD副图
+    if "MACD" in indicators:
+        ema12 = closes.ewm(span=12, adjust=False).mean()
+        ema26 = closes.ewm(span=26, adjust=False).mean()
+        dif = ema12 - ema26
+        dea = dif.ewm(span=9, adjust=False).mean()
+        macd_hist = (dif - dea) * 2
+        
+        colors = ["#0ecb81" if v >= 0 else "#f6465d" for v in macd_hist]
+        fig.add_trace(go.Bar(x=times, y=macd_hist, name="MACD柱", marker_color=colors),
+                      row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=times, y=dif, mode="lines", name="DIF",
+                                line=dict(color="#f0b90b", width=1.5)), row=current_row, col=1)
+        fig.add_trace(go.Scatter(x=times, y=dea, mode="lines", name="DEA",
+                                line=dict(color="#e64980", width=1.5)), row=current_row, col=1)
+        fig.add_hline(y=0, line_dash="solid", line_color="#848e9c", row=current_row, col=1)
+        fig.update_yaxes(title_text="MACD", row=current_row, col=1)
+    
+    # 6. 布局设置
+    fig.update_layout(
+        title=f"{symbol} 实时行情",
+        template="plotly_dark",
+        height=600,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=40, b=10),
+        plot_bgcolor="#0b0e11",
+        paper_bgcolor="#0b0e11",
+        font=dict(color="#eaecef"),
+    )
+    fig.update_xaxes(gridcolor="#2b3139")
+    fig.update_yaxes(gridcolor="#2b3139")
+    
+    return fig
 
 
 def hub_selftest(seconds=15):
@@ -1230,7 +1397,7 @@ st.title("📈 事件合约模拟交易终端")
 healthy = MANAGER.health()
 health_icon = "🟢" if healthy >= 2 else ("🟡" if healthy == 1 else "🔴")
 st.caption(
-    f"数据源：火币 HTX + 欧易 OKX + Gate.io 三源并行 · 可用源 {health_icon} {healthy}/3"
+    f"数据源：币安 Binance + Gate.io · 可用源 {health_icon} {healthy}/4"
     f" · 实时价=三源中位数 · 本终端为虚拟资金模拟盘，非真实交易"
 )
 
@@ -1271,16 +1438,11 @@ with st.container():
         "技术指标（可叠加）", INDICATOR_OPTIONS, default=["MA"], key="indicators",
         label_visibility="collapsed", placeholder="选择技术指标：MA / EMA / BOLL / RSI / KDJ")
 
-    if DATA_PORT:
-        chart_html = build_chart_html(
-            st.session_state.coin, st.session_state.interval,
-            selected_indicators, DATA_PORT, height=480,
-        )
-        _sub_h = {"RSI": 140, "KDJ": 160}
-        total_h = 480 + sum(_sub_h.get(i, 0) for i in selected_indicators) + 10
-        components.html(chart_html, height=total_h)
+    if chart_data:
+        fig = plot_candlestick_chart(chart_data, selected_indicators, st.session_state.coin)
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     else:
-        st.warning("图表数据服务启动失败，请检查端口占用。")
+        st.warning("行情数据加载中，请稍候...")
 
 # ---- 持仓监控 ----
 live_holdings()
@@ -1322,7 +1484,7 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     st.markdown("### 📊 图表指标")
-    st.caption("MA(5/10/20)、EMA(12/26)、BOLL(20,2) 叠加主图；RSI(14)、KDJ(9,3,3) 独立副图。"
+    st.caption("MA(5/10/20)、EMA(12/26)、BOLL(20,2) 叠加主图；MACD(12,26,9)、RSI(14)、KDJ(9,3,3) 独立副图。"
                "在图表右上方下拉框自由勾选组合。")
 
     st.markdown("### 🔌 数据源状态")
