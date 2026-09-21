@@ -69,19 +69,21 @@ LINE_STYLE_DASHED = 2        # lightweight-charts: 0实线 1点线 2虚线
 
 INDICATOR_OPTIONS = ["MA", "EMA", "BOLL", "RSI", "KDJ"]
 
-# 三源符号 / 周期映射（内部统一使用 BTCUSDT 与 1m/5m/15m/1h）
+# 多源符号 / 周期映射（内部统一使用 BTCUSDT 与 1m/5m/15m/1h）
 SYMBOL_MAP = {
+    "binance": lambda s: s.upper(),                # BTCUSDT（原样）
+    "gate": lambda s: f"{s[:-4]}_{s[-4:]}",        # BTC_USDT
     "htx": lambda s: s.lower(),                    # btcusdt
     "okx": lambda s: f"{s[:-4]}-{s[-4:]}",         # BTC-USDT
-    "gate": lambda s: f"{s[:-4]}_{s[-4:]}",        # BTC_USDT
 }
 INTERVAL_MAP = {
+    "binance": {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"},
+    "gate": {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"},
     "htx": {"1m": "1min", "5m": "5min", "15m": "15min", "1h": "60min"},
     "okx": {"1m": "candle1m", "5m": "candle5m", "15m": "candle15m", "1h": "candle1H"},
-    "gate": {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1h"},
 }
 OKX_REST_BAR = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H"}
-SOURCE_NAMES = {"htx": "火币 HTX", "okx": "欧易 OKX", "gate": "Gate.io"}
+SOURCE_NAMES = {"binance": "币安 Binance", "gate": "Gate.io", "htx": "火币 HTX", "okx": "欧易 OKX"}
 
 HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (event-contract-demo/3.0)"}
 
@@ -107,7 +109,15 @@ def _http_get_json(url, timeout=8):
 def rest_klines(source, symbol, interval, limit=KLINE_MAXLEN):
     """按源回填历史 K 线，统一返回 [{'time','open','high','low','close'}]，失败返回 None。"""
     try:
-        if source == "htx":
+        if source == "binance":
+            d = _http_get_json(
+                f"https://data-api.binance.vision/api/v3/klines"
+                f"?symbol={SYMBOL_MAP['binance'](symbol)}&interval={INTERVAL_MAP['binance'][interval]}&limit={min(limit, 1000)}"
+            )
+            # 币安返回 [时间戳ms, 开, 高, 低, 收, 成交量, ...]
+            bars = [{"time": int(r[0]) // 1000, "open": float(r[1]), "high": float(r[2]),
+                     "low": float(r[3]), "close": float(r[4])} for r in d]
+        elif source == "htx":
             d = _http_get_json(
                 f"https://api.huobi.pro/market/history/kline"
                 f"?symbol={SYMBOL_MAP['htx'](symbol)}&period={INTERVAL_MAP['htx'][interval]}&size={limit}"
@@ -143,6 +153,11 @@ def rest_klines(source, symbol, interval, limit=KLINE_MAXLEN):
 def rest_price(source, symbol):
     """按源取最新成交价（结算兜底用），失败返回 0。"""
     try:
+        if source == "binance":
+            d = _http_get_json(
+                f"https://data-api.binance.vision/api/v3/ticker/price?symbol={SYMBOL_MAP['binance'](symbol)}",
+                timeout=6)
+            return float(d.get("price", 0))
         if source == "htx":
             d = _http_get_json(
                 f"https://api.huobi.pro/market/trade?symbol={SYMBOL_MAP['htx'](symbol)}", timeout=6)
@@ -201,9 +216,10 @@ class SourceWorker:
         fails = 0
         while True:
             self.status = "connecting"
-            url = {"htx": "wss://api.huobi.pro/ws",
-                   "okx": "wss://ws.okx.com:8443/ws/v5/public",
-                   "gate": "wss://api.gateio.ws/ws/v4/"}[self.name]
+            url = {"binance": "wss://data-stream.binance.vision/ws",
+                   "gate": "wss://api.gateio.ws/ws/v4/",
+                   "htx": "wss://api.huobi.pro/ws",
+                   "okx": "wss://ws.okx.com:8443/ws/v5/public"}[self.name]
             try:
                 self._ws = websocket.WebSocketApp(
                     url,
@@ -225,7 +241,11 @@ class SourceWorker:
     # ---------- 订阅与心跳 ----------
     def _on_open(self, ws):
         iv = INTERVAL_MAP[self.name][self.interval]
-        if self.name == "htx":
+        if self.name == "binance":
+            # 币安WebSocket订阅K线
+            streams = [f"{SYMBOL_MAP['binance'](c).lower()}@kline_{iv}" for c in SUPPORTED_COINS]
+            self._send({"method": "SUBSCRIBE", "params": streams, "id": 1})
+        elif self.name == "htx":
             for i, c in enumerate(SUPPORTED_COINS):
                 self._send({"sub": f"market.{SYMBOL_MAP['htx'](c)}.kline.{iv}", "id": f"sub{i}"})
             # HTX 无需主动心跳：应答服务端 ping 即可（见 _on_message）
@@ -264,7 +284,23 @@ class SourceWorker:
     # ---------- 消息解析（只回调数据，绝不调用 st.*） ----------
     def _on_message(self, ws, message):
         try:
-            if self.name == "htx":
+            if self.name == "binance":
+                d = json.loads(message)
+                # 订阅应答消息跳过
+                if "result" in d or "id" in d:
+                    return
+                stream = d.get("stream", "")
+                data = d.get("data") or {}
+                kline = data.get("k") or {}
+                if not kline:
+                    return
+                # 从 stream 名解析交易对：btcusdt@kline_1m
+                symbol = stream.split("@")[0].upper()
+                bar = {"time": int(kline["t"]) // 1000, "open": float(kline["o"]),
+                       "high": float(kline["h"]), "low": float(kline["l"]),
+                       "close": float(kline["c"])}
+                self._emit(symbol, bar)
+            elif self.name == "htx":
                 if isinstance(message, (bytes, bytearray)):
                     message = gzip.decompress(message).decode("utf-8")
                 d = json.loads(message)
@@ -332,7 +368,7 @@ class SourceWorker:
 class MarketDataHub:
     """三源并行行情中枢：价格取中位数，K 线取最优活跃源，REST 回填多源兜底。"""
 
-    SOURCES = ["htx", "okx", "gate"]
+    SOURCES = ["binance", "gate", "htx", "okx"]
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -1309,3 +1345,5 @@ with st.sidebar:
     二元期权类产品在多个司法辖区被禁止向零售投资者提供，请勿用于真实资金。
     </div>
     """, unsafe_allow_html=True)
+
+
