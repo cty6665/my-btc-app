@@ -25,7 +25,7 @@ V3 保留：
   - 技术指标自由叠加：MA / EMA / 布林带 BOLL（主图）+ RSI / KDJ（副图窗格）。
   - 移除授权码：重置模拟账户一键完成。
 V2 保留：
-  - 火币 HTX + 欧易 OKX + Gate.io 三源并行，价格取中位数，断线自动重连。
+  - 币安 + 火币 HTX + 欧易 OKX + Gate.io 四源并行，价格取中位数，断线自动重连。
   - 数据层（第 2 节）零 streamlit 依赖，可单独自检：python event_contract_pro_v6.py
 
 运行方式：
@@ -366,7 +366,7 @@ class SourceWorker:
 
 
 class MarketDataHub:
-    """三源并行行情中枢：价格取中位数，K 线取最优活跃源，REST 回填多源兜底。"""
+    """四源并行行情中枢：价格取中位数，K 线取最优活跃源，REST 回填多源兜底。"""
 
     SOURCES = ["binance", "gate", "htx", "okx"]
 
@@ -534,7 +534,7 @@ def build_indicator_series(klines, selected):
     """按用户选择计算指标，返回 (主图叠加系列列表, 副图窗格列表)。
 
     主图叠加：MA(5/10/20)、EMA(12/26)、BOLL(20,2)
-    副图窗格：RSI(14)（带 70/50/30 参考线）、KDJ(9,3,3)
+    副图窗格：RSI(14)（带 70/50/30 参考线）、KDJ(9,3,3)、MACD(12,26,9)
     """
     if not klines:
         return [], []
@@ -586,6 +586,21 @@ def build_indicator_series(klines, selected):
             _line_series(times, k_val.tolist(), "#ffffff", "K"),
             _line_series(times, d_val.tolist(), "#f0b90b", "D"),
             _line_series(times, j_val.tolist(), "#e040fb", "J"),
+        ]})
+    if "MACD" in selected:
+        dif_list, dea_list, hist_list = calc_macd(klines)
+        for p in hist_list:
+            p["color"] = "#0ecb81" if p["value"] >= 0 else "#f6465d"
+        sub_panes.append({"chart": dict(SUB_CHART_CONFIG, height=160), "series": [
+            {"type": "Histogram", "data": hist_list,
+             "options": {"color": "#0ecb81", "title": "MACD",
+                         "priceLineVisible": False, "lastValueVisible": True}},
+            {"type": "Line", "data": dif_list,
+             "options": {"color": "#f0b90b", "lineWidth": 1, "title": "DIF",
+                         "priceLineVisible": False, "lastValueVisible": True}},
+            {"type": "Line", "data": dea_list,
+             "options": {"color": "#2196f3", "lineWidth": 1, "title": "DEA",
+                         "priceLineVisible": False, "lastValueVisible": True}},
         ]})
     return main_series, sub_panes
 
@@ -1019,15 +1034,16 @@ class _ChartDataHandler(http.server.BaseHTTPRequestHandler):
         price_lines = _get_pending_price_lines(symbol)
 
         main_js = [
-            {"color": s["options"]["color"], "title": s["options"]["title"], "data": s["data"]}
+            {"type": s.get("type", "Line"), "color": s["options"]["color"],
+             "title": s["options"]["title"], "data": s["data"]}
             for s in main_series
         ]
         sub_js = []
         for pane in sub_panes:
             pane_series = []
             for s in pane["series"]:
-                entry = {"color": s["options"]["color"], "title": s["options"]["title"],
-                         "data": s["data"]}
+                entry = {"type": s.get("type", "Line"), "color": s["options"]["color"],
+                         "title": s["options"]["title"], "data": s["data"]}
                 if "priceLines" in s:
                     entry["priceLines"] = s["priceLines"]
                 pane_series.append(entry)
@@ -1101,16 +1117,23 @@ _CHART_JS_ENGINE = r"""
   var mainContainer = document.getElementById('main-chart');
   var subContainer = document.getElementById('sub-charts');
 
+  // 币安式交互：滚轮缩放 / 拖拽平移 / 双指捏合 / 价格轴拖动压缩刻度。
+  // autoSize：ResizeObserver 实时跟随容器宽度（窗口拉伸、侧边栏收放都即时自适应）。
   var chartOpts = {
-    layout: { background: { type: 'solid', color: '#0b0e11' }, textColor: '#eaecef' },
-    grid: { vertLines: { color: '#2b3139' }, horzLines: { color: '#2b3139' } },
+    autoSize: true,
+    layout: { background: { type: 'solid', color: '#0b0e11' }, textColor: '#eaecef',
+              fontFamily: "-apple-system, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif" },
+    grid: { vertLines: { color: '#1e2329' }, horzLines: { color: '#1e2329' } },
     crosshair: { mode: 0 },
-    timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 5 },
+    handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+    handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+    timeScale: { timeVisible: true, secondsVisible: false, rightOffset: 5,
+                 barSpacing: 8, minBarSpacing: 0.5, borderColor: '#2b3139', fixLeftEdge: true },
+    rightPriceScale: { borderColor: '#2b3139', scaleMargins: { top: 0.08, bottom: 0.08 } },
+    localization: { locale: 'zh-CN' },
   };
 
-  var mainChart = LightweightCharts.createChart(mainContainer, Object.assign({
-    width: mainContainer.clientWidth, height: 480,
-  }, chartOpts));
+  var mainChart = LightweightCharts.createChart(mainContainer, chartOpts);
 
   var candleSeries = mainChart.addCandlestickSeries({
     upColor: '#0ecb81', downColor: '#f6465d',
@@ -1129,6 +1152,50 @@ _CHART_JS_ENGINE = r"""
   statusDiv.style.cssText = 'position:absolute;top:4px;right:8px;color:#848e9c;font-size:11px;z-index:10;pointer-events:none;';
   mainContainer.style.position = 'relative';
   mainContainer.appendChild(statusDiv);
+
+  // 左上角 OHLC 图例（币安风格，随十字光标联动）
+  var legendDiv = document.createElement('div');
+  legendDiv.style.cssText = 'position:absolute;top:4px;left:8px;color:#848e9c;font-size:12px;z-index:10;pointer-events:none;white-space:nowrap;';
+  mainContainer.appendChild(legendDiv);
+
+  // 视口离开最新 K 线时显示"回到实时"按钮
+  var liveBtn = document.createElement('button');
+  liveBtn.textContent = '回到实时';
+  liveBtn.style.cssText = 'position:absolute;bottom:28px;right:80px;z-index:20;display:none;'
+    + 'background:#f0b90b;color:#0b0e11;border:none;border-radius:4px;padding:4px 12px;'
+    + 'font-size:12px;font-weight:600;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.4);';
+  mainContainer.appendChild(liveBtn);
+  liveBtn.addEventListener('click', function() { mainChart.timeScale().scrollToRealTime(); });
+
+  function checkLiveButton() {
+    try {
+      var r = mainChart.timeScale().getVisibleLogicalRange();
+      if (!r) return;
+      var dataLen = candleSeries.data().length;
+      liveBtn.style.display = (dataLen && r.to < dataLen - 3) ? 'block' : 'none';
+    } catch (e) {}
+  }
+  mainChart.timeScale().subscribeVisibleLogicalRangeChange(checkLiveButton);
+
+  function fmtPrice(v) { return v == null ? '–' : Number(v).toFixed(2); }
+  function setLegend(bar) {
+    if (!bar) { legendDiv.textContent = ''; return; }
+    var up = bar.close >= bar.open;
+    var c = up ? '#0ecb81' : '#f6465d';
+    legendDiv.innerHTML = SYMBOL + ' · ' + INTERVAL + '　'
+      + '<span style="color:' + c + '">开 ' + fmtPrice(bar.open) + '　高 ' + fmtPrice(bar.high)
+      + '　低 ' + fmtPrice(bar.low) + '　收 ' + fmtPrice(bar.close) + '</span>';
+  }
+  mainChart.subscribeCrosshairMove(function(param) {
+    var bar = null;
+    if (param && param.time && param.seriesData) {
+      bar = param.seriesData.get(candleSeries) || null;
+    }
+    if (!bar) {
+      try { bar = candleSeries.dataByIndex(candleSeries.data().length - 1); } catch (e) {}
+    }
+    setLegend(bar);
+  });
 
   function updatePriceLines(lines) {
     for (var i = 0; i < activePriceLines.length; i++) {
@@ -1165,6 +1232,19 @@ _CHART_JS_ENGINE = r"""
     }
   }
 
+  function addSeries(chart, ss) {
+    if (ss.type === 'Histogram') {
+      return chart.addHistogramSeries({
+        color: ss.color, title: ss.title,
+        priceLineVisible: false, lastValueVisible: true,
+      });
+    }
+    return chart.addLineSeries({
+      color: ss.color, lineWidth: 1, title: ss.title,
+      priceLineVisible: false, lastValueVisible: true,
+    });
+  }
+
   function initChart() {
     var url = BASE + '/chart_data?symbol=' + SYMBOL + '&interval=' + INTERVAL + '&indicators=' + INDICATORS;
     fetch(url).then(function(resp) { return resp.json(); }).then(function(data) {
@@ -1175,16 +1255,20 @@ _CHART_JS_ENGINE = r"""
       }
 
       candleSeries.setData(data.candles);
+      setLegend(data.candles[data.candles.length - 1]);
+
+      // 默认聚焦最近约 90 根 K 线（币安默认视野），用户可自由滚轮缩放
+      try {
+        var n = data.candles.length;
+        mainChart.timeScale().setVisibleLogicalRange({ from: Math.max(0, n - 90), to: n + 5 });
+      } catch (e) {}
 
       if (data.mainSeries) {
         for (var i = 0; i < data.mainSeries.length; i++) {
           var ms = data.mainSeries[i];
-          if (!ms.data || ms.data.length === 0) continue;
-          var ls = mainChart.addLineSeries({
-            color: ms.color, lineWidth: 1, title: ms.title,
-            priceLineVisible: false, lastValueVisible: true,
-          });
-          ls.setData(ms.data);
+          // 空数据也占位创建，保证与 /tail 返回的索引一一对应
+          var ls = addSeries(mainChart, ms);
+          if (ms.data && ms.data.length) ls.setData(ms.data);
           mainLineSeries.push(ls);
         }
       }
@@ -1198,19 +1282,13 @@ _CHART_JS_ENGINE = r"""
           div.style.marginTop = '2px';
           subContainer.appendChild(div);
 
-          var subChart = LightweightCharts.createChart(div, Object.assign({
-            width: div.clientWidth, height: pane.height,
-          }, chartOpts));
+          var subChart = LightweightCharts.createChart(div, chartOpts);
 
           var paneSeries = [];
           for (var j = 0; j < pane.series.length; j++) {
             var ss = pane.series[j];
-            if (!ss.data || ss.data.length === 0) continue;
-            var ls = subChart.addLineSeries({
-              color: ss.color, lineWidth: 1, title: ss.title,
-              priceLineVisible: false, lastValueVisible: true,
-            });
-            ls.setData(ss.data);
+            var ls = addSeries(subChart, ss);
+            if (ss.data && ss.data.length) ls.setData(ss.data);
             if (ss.priceLines) {
               for (var k = 0; k < ss.priceLines.length; k++) {
                 var pl = ss.priceLines[k];
@@ -1243,6 +1321,7 @@ _CHART_JS_ENGINE = r"""
     fetch(url).then(function(resp) { return resp.json(); }).then(function(data) {
       if (data.candle) {
         candleSeries.update(data.candle);
+        setLegend(data.candle);
       }
       if (data.mainValues) {
         for (var i = 0; i < data.mainValues.length; i++) {
@@ -1273,14 +1352,6 @@ _CHART_JS_ENGINE = r"""
     }).catch(function() {});
   }
 
-  window.addEventListener('resize', function() {
-    mainChart.applyOptions({ width: mainContainer.clientWidth });
-    var subDivs = subContainer.children;
-    for (var i = 0; i < subCharts.length; i++) {
-      if (subDivs[i]) subCharts[i].applyOptions({ width: subDivs[i].clientWidth });
-    }
-  });
-
   initChart();
 })();
 """
@@ -1307,7 +1378,7 @@ def build_chart_html(symbol, interval, indicators, port, height=480):
         '<!DOCTYPE html><html><head><meta charset="utf-8">'
         '<style>'
         'body{margin:0;padding:0;background:#0b0e11;overflow:hidden;}'
-        '#main-chart{width:100%;height:' + str(height) + 'px;}'
+        '#main-chart{width:100%;height:' + str(height) + 'px;min-height:320px;}'
         '#sub-charts{width:100%;}'
         '</style>'
         '</head><body>'
@@ -1397,8 +1468,8 @@ st.title("📈 事件合约模拟交易终端")
 healthy = MANAGER.health()
 health_icon = "🟢" if healthy >= 2 else ("🟡" if healthy == 1 else "🔴")
 st.caption(
-    f"数据源：币安 Binance + Gate.io · 可用源 {health_icon} {healthy}/4"
-    f" · 实时价=三源中位数 · 本终端为虚拟资金模拟盘，非真实交易"
+    f"数据源：币安 Binance + Gate.io + 火币 HTX + 欧易 OKX · 可用源 {health_icon} {healthy}/4"
+    f" · 实时价=四源中位数 · 本终端为虚拟资金模拟盘，非真实交易"
 )
 
 live_account_panel()
@@ -1436,13 +1507,22 @@ with st.container():
                    f"（K线源：{src_label}）")
     selected_indicators = icol.multiselect(
         "技术指标（可叠加）", INDICATOR_OPTIONS, default=["MA"], key="indicators",
-        label_visibility="collapsed", placeholder="选择技术指标：MA / EMA / BOLL / RSI / KDJ")
+        label_visibility="collapsed", placeholder="选择技术指标：MA / EMA / BOLL / MACD / RSI / KDJ")
 
-    if chart_data:
-        fig = plot_candlestick_chart(chart_data, selected_indicators, st.session_state.coin)
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    # V6：TradingView Lightweight Charts 引擎（iframe 内每秒增量刷新，视口不重置）。
+    # 滚轮缩放 / 拖拽平移 / 双指捏合 / 价格轴拖动压缩刻度，宽度随容器实时自适应。
+    if DATA_PORT:
+        pane_count = sum(1 for x in ("RSI", "KDJ", "MACD") if x in selected_indicators)
+        chart_height = 500
+        iframe_height = chart_height + pane_count * 170 + 12
+        components.html(
+            build_chart_html(st.session_state.coin, st.session_state.interval,
+                             selected_indicators, DATA_PORT, height=chart_height),
+            height=iframe_height, scrolling=False,
+        )
+        st.caption("🖱️ 滚轮缩放 · 拖拽平移 · 拖动价格轴压缩刻度 · 双击价格轴复位 · 触屏双指缩放")
     else:
-        st.warning("行情数据加载中，请稍候...")
+        st.error("图表数据服务启动失败（本地端口被占用），请关闭占用 8577–8599 端口的程序后刷新页面。")
 
 # ---- 持仓监控 ----
 live_holdings()
@@ -1485,7 +1565,7 @@ with st.sidebar:
 
     st.markdown("### 📊 图表指标")
     st.caption("MA(5/10/20)、EMA(12/26)、BOLL(20,2) 叠加主图；MACD(12,26,9)、RSI(14)、KDJ(9,3,3) 独立副图。"
-               "在图表右上方下拉框自由勾选组合。")
+               "在图表右上方下拉框自由勾选组合。图表支持滚轮缩放、拖拽平移、双指捏合，宽度自适应屏幕。")
 
     st.markdown("### 🔌 数据源状态")
     live_source_status()
@@ -1503,7 +1583,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("""
     <div class='section-note'>
-    ⚠️ 本终端为<b>虚拟资金模拟盘</b>，行情来自 HTX / OKX / Gate.io 公开接口，仅用于学习演示。
+    ⚠️ 本终端为<b>虚拟资金模拟盘</b>，行情来自 币安 / HTX / OKX / Gate.io 公开接口，仅用于学习演示。
     二元期权类产品在多个司法辖区被禁止向零售投资者提供，请勿用于真实资金。
     </div>
     """, unsafe_allow_html=True)
