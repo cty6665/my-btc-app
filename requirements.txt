@@ -1,33 +1,4 @@
-{
-  "balance": 9800.0,
-  "orders": [
-    {
-      "id": "312c99e7",
-      "asset": "BTCUSDT",
-      "direction": "call",
-      "amount": 100.0,
-      "open_price": 60385.05,
-      "open_ts": 1795271031.9506216,
-      "settle_ts": 1795271331.9506216,
-      "status": "closed",
-      "settle_price": 60361.5,
-      "result": "loss",
-      "payout": 0.0,
-      "closed_ts": 1795271344.26854
-    },
-    {
-      "id": "dc3bf26f",
-      "asset": "BTCUSDT",
-      "direction": "call",
-      "amount": 100.0,
-      "open_price": 60231.1,
-      "open_ts": 1795281639.0545464,
-      "settle_ts": 1795282239.0545464,
-      "status": "closed",
-      "settle_price": 59167.5,
-      "result": "loss",
-      "payout": 0.0,
-      "closed_ts": 1795319325.1474893
-    }
-  ]
-}
+streamlit>=1.45.0
+pandas>=2.2.0
+websocket-client>=1.8.0
+plotly>=5.20.0
